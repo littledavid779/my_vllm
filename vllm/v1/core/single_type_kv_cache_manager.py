@@ -67,6 +67,7 @@ class SingleTypeKVCacheManager(ABC):
         # This is only used to track the RUNNING requests, we do not track the
         # data for preempted ones.
         self.num_cached_block: dict[str, int] = {}
+        self.restored_block_ids: defaultdict[str, set[int]] = defaultdict(set)
 
         self.kv_cache_group_id = kv_cache_group_id
         self._null_block = block_pool.null_block
@@ -188,7 +189,7 @@ class SingleTypeKVCacheManager(ABC):
 
         # Touch the computed blocks to make sure they won't be evicted.
         if self.enable_caching:
-            self.block_pool.touch(new_computed_blocks)
+            self.block_pool.touch(new_computed_blocks, request_id=request_id)
         else:
             assert not any(new_computed_blocks), (
                 "Computed blocks should be empty when prefix caching is disabled"
@@ -208,6 +209,10 @@ class SingleTypeKVCacheManager(ABC):
             allocated_blocks = self.block_pool.get_new_blocks(
                 cdiv(num_total_computed_tokens, self.block_size) - len(req_blocks)
             )
+            if allocated_blocks:
+                self.restored_block_ids[request_id].update(
+                    block.block_id for block in allocated_blocks
+                )
             req_blocks.extend(allocated_blocks)
             if type(self.kv_cache_spec) is FullAttentionSpec:
                 self.new_block_ids.extend(b.block_id for b in allocated_blocks)
@@ -262,6 +267,7 @@ class SingleTypeKVCacheManager(ABC):
         if num_cached_blocks >= num_full_blocks:
             return
 
+        restored_block_ids = self.restored_block_ids.get(request.request_id)
         self.block_pool.cache_full_blocks(
             request=request,
             blocks=self.req_to_blocks[request.request_id],
@@ -269,9 +275,18 @@ class SingleTypeKVCacheManager(ABC):
             num_full_blocks=num_full_blocks,
             block_size=self.block_size,
             kv_cache_group_id=self.kv_cache_group_id,
+            restored_block_ids=restored_block_ids,
         )
 
         self.num_cached_block[request.request_id] = num_full_blocks
+        if restored_block_ids:
+            cached_block_ids = {
+                block.block_id
+                for block in self.req_to_blocks[request.request_id][:num_full_blocks]
+            }
+            restored_block_ids.difference_update(cached_block_ids)
+            if not restored_block_ids:
+                self.restored_block_ids.pop(request.request_id, None)
 
     def free(self, request_id: str) -> None:
         """
@@ -289,6 +304,7 @@ class SingleTypeKVCacheManager(ABC):
 
         self.block_pool.free_blocks(ordered_blocks)
         self.num_cached_block.pop(request_id, None)
+        self.restored_block_ids.pop(request_id, None)
 
     @abstractmethod
     def get_num_common_prefix_blocks(self, running_request_id: str) -> int:

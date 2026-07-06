@@ -415,6 +415,27 @@ def test_free_kv_cache_block_queue_get_all_free_blocks():
     assert queue.get_all_free_blocks() == blocks[1:2] + blocks[3:] + [block_to_remove]
 
 
+
+def test_free_kv_cache_block_queue_reorder_prefix():
+    blocks = [KVCacheBlock(block_id=i) for i in range(6)]
+    queue = FreeKVCacheBlockQueue(blocks)
+
+    assert queue.get_first_n_free_blocks(3) == blocks[:3]
+    queue.reorder_prefix([blocks[2], blocks[0], blocks[1]])
+
+    assert queue.num_free_blocks == 6
+    assert queue.get_all_free_blocks() == [
+        blocks[2],
+        blocks[0],
+        blocks[1],
+        blocks[3],
+        blocks[4],
+        blocks[5],
+    ]
+    assert queue.popleft_n(4) == [blocks[2], blocks[0], blocks[1], blocks[3]]
+    assert queue.get_all_free_blocks() == [blocks[4], blocks[5]]
+
+
 def test_generate_block_hash_extra_keys():
     request = make_request(
         request_id="0",

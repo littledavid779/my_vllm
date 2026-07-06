@@ -1,6 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import json
+import math
+import os
+import time
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from typing import Any
 
 from vllm.distributed.kv_events import (
@@ -28,6 +33,55 @@ from vllm.v1.core.kv_cache_utils import (
 from vllm.v1.request import Request
 
 logger = init_logger(__name__)
+
+
+@dataclass
+class BlockValueStats:
+    request_ids: set[str] = field(default_factory=set)
+    store_count: int = 0
+    apc_hit_count: int = 0
+    access_count: int = 0
+    last_access_s: float = 0.0
+    last_apc_hit_s: float = 0.0
+    restore_count: int = 0
+    restore_bytes: int = 0
+    min_prefix_index: int | None = None
+    max_prefix_chain_len: int = 0
+
+
+@dataclass
+class BlockValuePolicyStats:
+    prefix_cache_query_count: int = 0
+    prefix_cache_zero_hit_count: int = 0
+    effective_prefix_hit_blocks_sum: int = 0
+    effective_prefix_hit_tokens_sum: int = 0
+    reorder_attempt_count: int = 0
+    reorder_count: int = 0
+    reorder_time_s: float = 0.0
+    reorder_scored_blocks: int = 0
+    reorder_skipped_low_usage_count: int = 0
+    reorder_skipped_no_cached_evict_count: int = 0
+    evicted_blocks: int = 0
+    evicted_value_score_sum: float = 0.0
+    evicted_owner_count_sum: int = 0
+    evicted_access_count_sum: int = 0
+    evicted_apc_hit_count_sum: int = 0
+    evicted_restore_count_sum: int = 0
+    evicted_prefix_index_sum: int = 0
+    evicted_prefix_index_count: int = 0
+    evicted_chain_downstream_blocks_sum: int = 0
+    evicted_chain_impact_sum: float = 0.0
+    evicted_seconds_since_last_apc_hit_sum: float = 0.0
+    evicted_seconds_since_last_apc_hit_count: int = 0
+
+
+_VALUE_EVICTION_POLICIES = {
+    "lru",
+    "prefix_only",
+    "hotness_only",
+    "hybrid",
+    "chain_hybrid",
+}
 
 
 class BlockHashToBlockMap:
@@ -119,6 +173,17 @@ class BlockHashToBlockMap:
         self._unexpected_blocks_type(blocks)
         return None
 
+    def contains(self, key: BlockHashWithGroupId, block_id: int) -> bool:
+        blocks = self._cache.get(key)
+        if blocks is None:
+            return False
+        if isinstance(blocks, KVCacheBlock):
+            return blocks.block_id == block_id
+        if isinstance(blocks, dict):
+            return block_id in blocks
+        self._unexpected_blocks_type(blocks)
+        return False
+
     def __len__(self) -> int:
         return len(self._cache)
 
@@ -178,7 +243,354 @@ class BlockPool:
         self.enable_kv_cache_events = enable_kv_cache_events
         self.kv_event_queue: list[KVCacheEvent] = []
 
+        policy = os.getenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "lru")
+        self.value_eviction_policy = policy.strip().lower()
+        if self.value_eviction_policy not in _VALUE_EVICTION_POLICIES:
+            logger.warning(
+                "Unknown VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY=%s; using lru",
+                policy,
+            )
+            self.value_eviction_policy = "lru"
+        self._value_eviction_enabled = (
+            self.enable_caching and self.value_eviction_policy != "lru"
+        )
+        self._block_value_stats: dict[BlockHashWithGroupId, BlockValueStats] = {}
+        self._value_share_weight = self._read_float_env(
+            "VLLM_EXPERIMENTAL_GPU_EVICTION_SHARE_WEIGHT", 1.0
+        )
+        self._value_hotness_weight = self._read_float_env(
+            "VLLM_EXPERIMENTAL_GPU_EVICTION_HOTNESS_WEIGHT", 1.0
+        )
+        self._value_restore_weight = self._read_float_env(
+            "VLLM_EXPERIMENTAL_GPU_EVICTION_RESTORE_WEIGHT", 1.0
+        )
+        self._value_chain_weight = self._read_float_env(
+            "VLLM_EXPERIMENTAL_GPU_EVICTION_CHAIN_WEIGHT", 1.0
+        )
+        self._value_hotness_half_life_s = max(
+            self._read_float_env(
+                "VLLM_EXPERIMENTAL_GPU_EVICTION_HOTNESS_HALF_LIFE_S", 30.0
+            ),
+            1e-6,
+        )
+        self._value_min_usage = min(
+            max(
+                self._read_float_env(
+                    "VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_USAGE", 0.20
+                ),
+                0.0,
+            ),
+            1.0,
+        )
+        self._value_candidate_window = max(
+            1,
+            int(
+                self._read_float_env(
+                    "VLLM_EXPERIMENTAL_GPU_EVICTION_CANDIDATE_WINDOW",
+                    64.0,
+                )
+            ),
+        )
+        self._value_request_owner_map = self._read_owner_map_env()
+        self._value_policy_stats = BlockValuePolicyStats()
+        if self._value_eviction_enabled:
+            logger.info(
+                "Experimental GPU value eviction enabled: "
+                "policy=%s min_usage=%.2f share_weight=%.2f "
+                "hotness_weight=%.2f restore_weight=%.2f "
+                "chain_weight=%.2f candidate_window=%d",
+                self.value_eviction_policy,
+                self._value_min_usage,
+                self._value_share_weight,
+                self._value_hotness_weight,
+                self._value_restore_weight,
+                self._value_chain_weight,
+                self._value_candidate_window,
+            )
+
         self.metrics_collector = metrics_collector
+
+    @staticmethod
+    def _read_float_env(name: str, default: float) -> float:
+        value = os.getenv(name)
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except ValueError:
+            logger.warning("Invalid %s=%s; using %s", name, value, default)
+            return default
+
+    @staticmethod
+    def _read_owner_map_env() -> dict[str, str]:
+        value = os.getenv("VLLM_EXPERIMENTAL_GPU_EVICTION_REQUEST_OWNER_MAP")
+        if not value:
+            return {}
+        try:
+            data = json.loads(value)
+        except json.JSONDecodeError:
+            logger.warning(
+                "Invalid VLLM_EXPERIMENTAL_GPU_EVICTION_REQUEST_OWNER_MAP; "
+                "falling back to request_id ownership"
+            )
+            return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "VLLM_EXPERIMENTAL_GPU_EVICTION_REQUEST_OWNER_MAP must be a JSON "
+                "object; falling back to request_id ownership"
+            )
+            return {}
+        return {
+            str(request_id): str(owner_id)
+            for request_id, owner_id in data.items()
+            if owner_id is not None
+        }
+
+    def _value_owner_id(self, request_id: str | None) -> str | None:
+        if not request_id:
+            return None
+        owner_id = self._value_request_owner_map.get(request_id)
+        if owner_id is not None:
+            return owner_id
+
+        external_request_id, sep, suffix = request_id.rpartition("-")
+        if sep and len(suffix) == 8 and all(c in "0123456789abcdef" for c in suffix):
+            owner_id = self._value_request_owner_map.get(external_request_id)
+            if owner_id is not None:
+                return owner_id
+            return external_request_id
+        return request_id
+
+    def _get_block_value_stats(
+        self, block_hash: BlockHashWithGroupId
+    ) -> BlockValueStats:
+        return self._block_value_stats.setdefault(block_hash, BlockValueStats())
+
+    def _record_block_store(
+        self,
+        block_hash: BlockHashWithGroupId | None,
+        request_id: str | None,
+        prefix_index: int,
+        prefix_chain_len: int,
+    ) -> None:
+        if block_hash is None:
+            return
+        stats = self._get_block_value_stats(block_hash)
+        owner_id = self._value_owner_id(request_id)
+        if owner_id:
+            stats.request_ids.add(owner_id)
+        stats.store_count += 1
+        if stats.min_prefix_index is None:
+            stats.min_prefix_index = prefix_index
+        else:
+            stats.min_prefix_index = min(stats.min_prefix_index, prefix_index)
+        stats.max_prefix_chain_len = max(
+            stats.max_prefix_chain_len, prefix_chain_len
+        )
+
+    def _record_block_access(
+        self, block_hash: BlockHashWithGroupId | None, request_id: str | None
+    ) -> None:
+        if block_hash is None:
+            return
+        stats = self._get_block_value_stats(block_hash)
+        owner_id = self._value_owner_id(request_id)
+        if owner_id:
+            stats.request_ids.add(owner_id)
+        stats.access_count += 1
+        stats.apc_hit_count += 1
+        now_s = time.monotonic()
+        stats.last_access_s = now_s
+        stats.last_apc_hit_s = now_s
+
+    def _record_block_restore(
+        self,
+        block_hash: BlockHashWithGroupId | None,
+        request_id: str | None,
+        restore_bytes: int = 0,
+    ) -> None:
+        if block_hash is None:
+            return
+        stats = self._get_block_value_stats(block_hash)
+        owner_id = self._value_owner_id(request_id)
+        if owner_id:
+            stats.request_ids.add(owner_id)
+        stats.restore_count += 1
+        stats.restore_bytes += max(restore_bytes, 0)
+        stats.last_access_s = time.monotonic()
+
+    @staticmethod
+    def _block_chain_downstream_blocks(stats: BlockValueStats) -> int:
+        if stats.min_prefix_index is None:
+            return 0
+        return max(
+            0, stats.max_prefix_chain_len - stats.min_prefix_index - 1
+        )
+
+    @classmethod
+    def _block_chain_impact_score(cls, stats: BlockValueStats) -> float:
+        downstream_blocks = cls._block_chain_downstream_blocks(stats)
+        return math.log1p(downstream_blocks)
+
+    def _block_value_score(self, block: KVCacheBlock, now_s: float) -> float:
+        block_hash = block.block_hash
+        if block_hash is None:
+            return 0.0
+
+        stats = self._block_value_stats.get(block_hash)
+        if stats is None:
+            return 0.0
+
+        share_score = math.log1p(len(stats.request_ids))
+        if stats.last_apc_hit_s > 0.0:
+            age_s = max(0.0, now_s - stats.last_apc_hit_s)
+            hotness_score = stats.apc_hit_count * math.pow(
+                0.5, age_s / self._value_hotness_half_life_s
+            )
+        else:
+            hotness_score = 0.0
+        chain_score = self._block_chain_impact_score(stats)
+        restore_score = math.log1p(stats.restore_count) + math.log1p(
+            stats.restore_bytes
+        )
+
+        if self.value_eviction_policy == "prefix_only":
+            return share_score
+        if self.value_eviction_policy == "hotness_only":
+            return hotness_score
+
+        hotness_boost = 1.0 + self._value_hotness_weight * math.log1p(
+            hotness_score
+        )
+        restore_boost = 1.0 + self._value_restore_weight * math.log1p(
+            restore_score
+        )
+        if self.value_eviction_policy == "chain_hybrid":
+            chain_boost = 1.0 + self._value_chain_weight * chain_score
+            return (
+                self._value_share_weight
+                * share_score
+                * hotness_boost
+                * chain_boost
+                * restore_boost
+            )
+        return self._value_share_weight * share_score * hotness_boost * restore_boost
+
+    def _usage_after_allocate(self, num_blocks_to_allocate: int) -> float:
+        total_gpu_blocks = self.num_gpu_blocks - 1
+        if total_gpu_blocks <= 0:
+            return 0.0
+        used_blocks_after_allocate = (
+            total_gpu_blocks - self.free_block_queue.num_free_blocks
+        ) + num_blocks_to_allocate
+        return used_blocks_after_allocate / total_gpu_blocks
+
+    def _should_reorder_free_queue_for_value_policy(
+        self, num_blocks_to_allocate: int
+    ) -> bool:
+        if (
+            not self._value_eviction_enabled
+            or self.free_block_queue.num_free_blocks <= 1
+        ):
+            return False
+        return (
+            self._usage_after_allocate(num_blocks_to_allocate)
+            >= self._value_min_usage
+        )
+
+    def _is_cached_eviction_candidate(self, block: KVCacheBlock) -> bool:
+        block_hash = block.block_hash
+        return (
+            block_hash is not None
+            and self.cached_block_hash_to_block.contains(
+                block_hash, block.block_id
+            )
+        )
+
+    def _maybe_reorder_free_queue_for_value_policy(
+        self, num_blocks_to_allocate: int
+    ) -> None:
+        if (
+            not self._value_eviction_enabled
+            or self.free_block_queue.num_free_blocks <= 1
+        ):
+            return
+        stats = self._value_policy_stats
+        if not self._should_reorder_free_queue_for_value_policy(
+            num_blocks_to_allocate
+        ):
+            stats.reorder_skipped_low_usage_count += 1
+            return
+
+        stats.reorder_attempt_count += 1
+        start_s = time.perf_counter()
+        candidate_window = min(
+            self.free_block_queue.num_free_blocks,
+            max(num_blocks_to_allocate, self._value_candidate_window),
+        )
+        free_blocks = self.free_block_queue.get_first_n_free_blocks(candidate_window)
+        eviction_candidate_count = min(num_blocks_to_allocate, len(free_blocks))
+        eviction_candidates = free_blocks[:eviction_candidate_count]
+        if not any(
+            self._is_cached_eviction_candidate(block)
+            for block in eviction_candidates
+        ):
+            stats.reorder_skipped_no_cached_evict_count += 1
+            return
+
+        now_s = time.monotonic()
+        scored_blocks = list(enumerate(free_blocks))
+        scored_blocks.sort(
+            key=lambda item: (self._block_value_score(item[1], now_s), item[0])
+        )
+        ordered_blocks = [block for _, block in scored_blocks]
+        stats.reorder_scored_blocks += len(scored_blocks)
+        stats.reorder_time_s += time.perf_counter() - start_s
+        if ordered_blocks != free_blocks:
+            self.free_block_queue.reorder_prefix(ordered_blocks)
+            stats.reorder_count += 1
+
+    def _record_cached_block_eviction(
+        self, block: KVCacheBlock, block_hash: BlockHashWithGroupId
+    ) -> None:
+        if not self._value_eviction_enabled:
+            return
+        stats = self._block_value_stats.get(block_hash)
+        policy_stats = self._value_policy_stats
+        now_s = time.monotonic()
+        policy_stats.evicted_blocks += 1
+        policy_stats.evicted_value_score_sum += self._block_value_score(
+            block, now_s
+        )
+        if stats is not None:
+            policy_stats.evicted_owner_count_sum += len(stats.request_ids)
+            policy_stats.evicted_access_count_sum += stats.access_count
+            policy_stats.evicted_apc_hit_count_sum += stats.apc_hit_count
+            policy_stats.evicted_restore_count_sum += stats.restore_count
+            if stats.min_prefix_index is not None:
+                policy_stats.evicted_prefix_index_sum += stats.min_prefix_index
+                policy_stats.evicted_prefix_index_count += 1
+            policy_stats.evicted_chain_downstream_blocks_sum += (
+                self._block_chain_downstream_blocks(stats)
+            )
+            policy_stats.evicted_chain_impact_sum += (
+                self._block_chain_impact_score(stats)
+            )
+            if stats.last_apc_hit_s > 0.0:
+                policy_stats.evicted_seconds_since_last_apc_hit_sum += max(
+                    0.0, now_s - stats.last_apc_hit_s
+                )
+                policy_stats.evicted_seconds_since_last_apc_hit_count += 1
+
+    def record_prefix_cache_lookup(self, num_hit_tokens: int) -> None:
+        stats = self._value_policy_stats
+        stats.prefix_cache_query_count += 1
+        stats.effective_prefix_hit_tokens_sum += num_hit_tokens
+        stats.effective_prefix_hit_blocks_sum += (
+            num_hit_tokens // self.hash_block_size
+        )
+        if num_hit_tokens == 0:
+            stats.prefix_cache_zero_hit_count += 1
 
     def get_cached_block(
         self, block_hash: BlockHash, kv_cache_group_ids: list[int]
@@ -194,6 +606,8 @@ class BlockPool:
         Returns:
             The cached blocks if exists, or None.
         """
+        # 开题阶段代码阅读：BlockPool 用 block_hash 查找 GPU 中
+        # 已缓存的 KV block，这是 prefix hit 最底层的数据结构入口。
         cached_blocks = []
         for group_id in kv_cache_group_ids:
             block_hash_with_group_id = make_block_hash_with_group_id(
@@ -215,6 +629,7 @@ class BlockPool:
         num_full_blocks: int,
         block_size: int,
         kv_cache_group_id: int,
+        restored_block_ids: set[int] | None = None,
     ) -> None:
         """Cache a list of full blocks for prefix caching.
         This function takes a list of blocks that will have their block hash
@@ -233,6 +648,8 @@ class BlockPool:
             block_size: Number of tokens in each block.
             kv_cache_group_id: The id of the KV cache group.
         """
+        # 开题阶段代码阅读：这个函数把已经算满的 blocks 注册进
+        # prefix cache 的 hash table，之后其他请求才能通过 hash 命中。
         if num_cached_blocks >= num_full_blocks:
             return
         new_full_blocks = blocks[num_cached_blocks:num_full_blocks]
@@ -263,12 +680,24 @@ class BlockPool:
             assert blk.block_hash is None
             block_hash = new_block_hashes[i]
 
+            # 开题阶段代码阅读：这里给 full block 绑定 block_hash，
+            # 让它从普通 GPU block 变成可被 prefix cache 复用的 block。
             # Update and added the full block to the cache.
             block_hash_with_group_id = make_block_hash_with_group_id(
                 block_hash, kv_cache_group_id
             )
             blk.block_hash = block_hash_with_group_id
             self.cached_block_hash_to_block.insert(block_hash_with_group_id, blk)
+            self._record_block_store(
+                block_hash_with_group_id,
+                request.request_id,
+                prefix_index=num_cached_blocks + i,
+                prefix_chain_len=num_full_blocks,
+            )
+            if restored_block_ids and blk.block_id in restored_block_ids:
+                self._record_block_restore(
+                    block_hash_with_group_id, request.request_id
+                )
             if new_hashes is not None:
                 new_hashes.append(maybe_convert_block_hash(block_hash))
 
@@ -331,6 +760,9 @@ class BlockPool:
         if num_blocks > self.get_num_free_blocks():
             raise ValueError(f"Cannot get {num_blocks} free blocks from the pool")
 
+        # 开题阶段代码阅读：新 block 从 free_block_queue 头部取出；
+        # 因此 free queue 的排序实际决定了哪些 cached blocks 会优先被挤掉。
+        self._maybe_reorder_free_queue_for_value_policy(num_blocks)
         ret: list[KVCacheBlock] = self.free_block_queue.popleft_n(num_blocks)
 
         # In order to only iterate the list once, we duplicated code a bit
@@ -360,6 +792,8 @@ class BlockPool:
         Returns:
             True if the block is evicted, False otherwise.
         """
+        # 开题阶段代码阅读：当 free queue 中的 cached block 被重新
+        # 分配时，会在这里清除 hash 元数据，相当于从 prefix cache 淘汰。
         # Clean up metrics tracking first to prevent leaks
         if self.metrics_collector:
             self.metrics_collector.on_block_evicted(block)
@@ -374,6 +808,7 @@ class BlockPool:
             # eviction is not needed
             return False
 
+        self._record_cached_block_eviction(block, block_hash)
         block.reset_hash()
 
         if self.enable_kv_cache_events:
@@ -389,7 +824,9 @@ class BlockPool:
             )
         return True
 
-    def touch(self, blocks: Sequence[KVCacheBlock]) -> None:
+    def touch(
+        self, blocks: Sequence[KVCacheBlock], request_id: str | None = None
+    ) -> None:
         """Touch a block increases its reference count by 1, and may remove
         the block from the free queue. This is used when a block is hit by
         another request with the same prefix.
@@ -397,7 +834,10 @@ class BlockPool:
         Args:
             blocks: A list of blocks to touch.
         """
+        # 开题阶段代码阅读：prefix hit 后会 touch block，提高引用计数
+        # 并把 ref_cnt=0 的块移出 free queue；这里可对应 hotness/access 信号。
         for block in blocks:
+            self._record_block_access(block.block_hash, request_id)
             # ref_cnt=0 means this block is in the free list (i.e. eviction
             # candidate), so remove it.
             if block.ref_cnt == 0 and not block.is_null:
@@ -414,6 +854,9 @@ class BlockPool:
             ordered_blocks: A list of blocks to free ordered by their eviction
                 priority.
         """
+        # 开题阶段代码阅读：请求释放 blocks 时，ref_cnt 归零的块会
+        # 进入 free queue 成为 eviction candidates；这是 retention policy
+        # 最直接的可观察位置。
         # Materialize the iterable to allow multiple passes.
         blocks_list = list(ordered_blocks)
         for block in blocks_list:
@@ -461,6 +904,7 @@ class BlockPool:
 
         # Remove all hashes so that no new blocks will hit.
         self.cached_block_hash_to_block = BlockHashToBlockMap()
+        self._block_value_stats.clear()
 
         # Remove all hashes from all blocks.
         for block in self.blocks:
@@ -475,6 +919,56 @@ class BlockPool:
             self.kv_event_queue.append(AllBlocksCleared())
 
         return True
+
+    def get_value_policy_stats(
+        self, reset: bool = False
+    ) -> dict[str, int | float | str]:
+        stats = self._value_policy_stats
+        snapshot: dict[str, int | float | str] = {
+            "policy": self.value_eviction_policy,
+            "min_usage": self._value_min_usage,
+            "candidate_window": self._value_candidate_window,
+            "chain_weight": self._value_chain_weight,
+            "prefix_cache_query_count": stats.prefix_cache_query_count,
+            "prefix_cache_zero_hit_count": stats.prefix_cache_zero_hit_count,
+            "effective_prefix_hit_blocks_sum": (
+                stats.effective_prefix_hit_blocks_sum
+            ),
+            "effective_prefix_hit_tokens_sum": (
+                stats.effective_prefix_hit_tokens_sum
+            ),
+            "reorder_attempt_count": stats.reorder_attempt_count,
+            "reorder_count": stats.reorder_count,
+            "reorder_time_s": stats.reorder_time_s,
+            "reorder_scored_blocks": stats.reorder_scored_blocks,
+            "reorder_skipped_low_usage_count": (
+                stats.reorder_skipped_low_usage_count
+            ),
+            "reorder_skipped_no_cached_evict_count": (
+                stats.reorder_skipped_no_cached_evict_count
+            ),
+            "evicted_blocks": stats.evicted_blocks,
+            "evicted_value_score_sum": stats.evicted_value_score_sum,
+            "evicted_owner_count_sum": stats.evicted_owner_count_sum,
+            "evicted_access_count_sum": stats.evicted_access_count_sum,
+            "evicted_apc_hit_count_sum": stats.evicted_apc_hit_count_sum,
+            "evicted_restore_count_sum": stats.evicted_restore_count_sum,
+            "evicted_prefix_index_sum": stats.evicted_prefix_index_sum,
+            "evicted_prefix_index_count": stats.evicted_prefix_index_count,
+            "evicted_chain_downstream_blocks_sum": (
+                stats.evicted_chain_downstream_blocks_sum
+            ),
+            "evicted_chain_impact_sum": stats.evicted_chain_impact_sum,
+            "evicted_seconds_since_last_apc_hit_sum": (
+                stats.evicted_seconds_since_last_apc_hit_sum
+            ),
+            "evicted_seconds_since_last_apc_hit_count": (
+                stats.evicted_seconds_since_last_apc_hit_count
+            ),
+        }
+        if reset:
+            self._value_policy_stats = BlockValuePolicyStats()
+        return snapshot
 
     def get_num_free_blocks(self) -> int:
         """Get the number of free blocks in the pool.

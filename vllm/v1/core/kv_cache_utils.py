@@ -345,6 +345,96 @@ class FreeKVCacheBlockQueue:
 
         self.num_free_blocks += len(blocks)
 
+    def reorder(self, blocks: list[KVCacheBlock]) -> None:
+        """Replace the free-list order with the provided blocks.
+
+        The input must contain exactly the current free blocks. This is used by
+        experimental eviction policies that score eviction candidates before
+        allocation.
+        """
+        if len(blocks) != self.num_free_blocks:
+            raise ValueError(
+                "reorder() must receive exactly all free blocks: "
+                f"got {len(blocks)}, expected {self.num_free_blocks}"
+            )
+
+        seen_block_ids: set[int] = set()
+        for block in blocks:
+            if block.block_id in seen_block_ids:
+                raise ValueError(
+                    f"Duplicate block {block.block_id} in free-list reorder"
+                )
+            seen_block_ids.add(block.block_id)
+            block.prev_free_block = None
+            block.next_free_block = None
+
+        if not blocks:
+            self.fake_free_list_head.next_free_block = self.fake_free_list_tail
+            self.fake_free_list_tail.prev_free_block = self.fake_free_list_head
+            return
+
+        self.fake_free_list_head.next_free_block = blocks[0]
+        blocks[0].prev_free_block = self.fake_free_list_head
+
+        for prev_block, next_block in zip(blocks, blocks[1:]):
+            prev_block.next_free_block = next_block
+            next_block.prev_free_block = prev_block
+
+        blocks[-1].next_free_block = self.fake_free_list_tail
+        self.fake_free_list_tail.prev_free_block = blocks[-1]
+
+    def get_first_n_free_blocks(self, n: int) -> list[KVCacheBlock]:
+        """Get the first n free blocks without removing them."""
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
+        if n > self.num_free_blocks:
+            raise ValueError(
+                f"Cannot get {n} blocks from {self.num_free_blocks} free blocks"
+            )
+
+        ret: list[KVCacheBlock] = []
+        curr_block = self.fake_free_list_head.next_free_block
+        for _ in range(n):
+            if curr_block is None or curr_block is self.fake_free_list_tail:
+                raise RuntimeError("Free block queue ended before n blocks")
+            ret.append(curr_block)
+            curr_block = curr_block.next_free_block
+        return ret
+
+    def reorder_prefix(self, blocks: list[KVCacheBlock]) -> None:
+        """Replace the order of the current free-list prefix."""
+        n = len(blocks)
+        if n == 0:
+            return
+        prefix = self.get_first_n_free_blocks(n)
+
+        prefix_block_ids = {block.block_id for block in prefix}
+        if len(prefix_block_ids) != n:
+            raise ValueError("Duplicate block in current free-list prefix")
+        new_block_ids = {block.block_id for block in blocks}
+        if len(new_block_ids) != n:
+            raise ValueError("Duplicate block in free-list prefix reorder")
+        if new_block_ids != prefix_block_ids:
+            raise ValueError("reorder_prefix() must receive the current prefix blocks")
+
+        suffix = prefix[-1].next_free_block
+        if suffix is None:
+            raise RuntimeError("Free block queue prefix has no suffix link")
+
+        for block in prefix:
+            block.prev_free_block = None
+            block.next_free_block = None
+
+        self.fake_free_list_head.next_free_block = blocks[0]
+        blocks[0].prev_free_block = self.fake_free_list_head
+
+        for prev_block, next_block in zip(blocks, blocks[1:]):
+            prev_block.next_free_block = next_block
+            next_block.prev_free_block = prev_block
+
+        blocks[-1].next_free_block = suffix
+        suffix.prev_free_block = blocks[-1]
+
     def get_all_free_blocks(self) -> list[KVCacheBlock]:
         """Get all free blocks in the free list. Mainly used for testing.
 

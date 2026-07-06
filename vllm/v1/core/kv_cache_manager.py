@@ -161,6 +161,11 @@ class KVCacheManager:
         """
         return self.block_pool.get_usage()
 
+    def get_value_policy_stats(
+        self, reset: bool = False
+    ) -> dict[str, int | float | str]:
+        return self.block_pool.get_value_policy_stats(reset=reset)
+
     def make_prefix_cache_stats(self) -> PrefixCacheStats | None:
         """Get (and reset) the prefix cache stats.
 
@@ -185,6 +190,8 @@ class KVCacheManager:
                 - A list of blocks that are computed for the request.
                 - The number of computed tokens.
         """
+        # 开题阶段代码阅读：这个函数是本地 GPU prefix cache
+        # 命中的入口，用来判断请求前缀中哪些 full blocks 已经算过。
         # We skip finding the prefix cache hit when prefix caching is
         # disabled or the request is marked as skipping kv cache read
         # (which happens when the request requires prompt logprobs
@@ -199,11 +206,15 @@ class KVCacheManager:
         # num_computed_tokens to be block-size aligned. Removing this limitation
         # could slightly improve performance in the future.
         max_cache_hit_length = request.num_tokens - 1
+        # 开题阶段代码阅读：这里查找“最长连续前缀命中”，说明当前
+        # prefix cache 首先回答的是“能不能复用”，不是“值不值得常驻 GPU”。
         computed_blocks, num_new_computed_tokens = (
             self.coordinator.find_longest_cache_hit(
                 request.block_hashes, max_cache_hit_length
             )
         )
+
+        self.block_pool.record_prefix_cache_lookup(num_new_computed_tokens)
 
         if self.log_stats:
             assert self.prefix_cache_stats is not None
@@ -297,6 +308,9 @@ class KVCacheManager:
         Returns:
             A list of new allocated blocks.
         """
+        # 开题阶段代码阅读：allocate_slots 是 block 生命周期的核心
+        # 落点，会把本地命中、external 命中和本轮新计算 token 统一映射
+        # 到 GPU block slot 上。
         # When loading KV data asynchronously, we may have zero new tokens to
         # compute while still allocating slots for externally computed tokens.
         if num_new_tokens == 0 and num_external_computed_tokens == 0:
@@ -310,6 +324,9 @@ class KVCacheManager:
         else:
             new_computed_block_list = self.empty_kv_cache_blocks.blocks
 
+        # 开题阶段代码阅读：这里把 request 已完成 token、本地 prefix hit
+        # 和 external KV hit 汇总成 total_computed_tokens，后续 token budget
+        # 与 block 分配都依赖这个数。
         # The number of computed tokens is the number of computed tokens plus
         # the new prefix caching hits
         num_local_computed_tokens = (
@@ -325,6 +342,8 @@ class KVCacheManager:
             self.max_model_len,
         )
 
+        # 开题阶段代码阅读：这里会先释放 attention 已不需要的块，
+        # 会影响后续 free queue 和 eviction 候选集合。
         # Free the blocks that are skipped during the attention computation
         # (e.g., tokens outside the sliding window).
         # We can do this even if we cannot schedule this request due to
@@ -353,6 +372,8 @@ class KVCacheManager:
             new_computed_block_list is not self.empty_kv_cache_blocks.blocks
             or num_external_computed_tokens > 0
         ):
+            # 开题阶段代码阅读：这里把本地命中的 blocks 和 external
+            # 待恢复的 tokens 接到当前 request 的 block table 中。
             # Append the new computed blocks to the request blocks until now to
             # avoid the case where the new blocks cannot be allocated.
             self.coordinator.allocate_new_computed_blocks(
@@ -383,6 +404,8 @@ class KVCacheManager:
             total_computed_tokens + num_new_tokens,
             request.num_tokens,
         )
+        # 开题阶段代码阅读：本轮完成或恢复后的 full blocks 会在这里
+        # 进入 prefix cache；后续是否值得留在 GPU，是你的策略可介入点。
         self.coordinator.cache_blocks(request, num_tokens_to_cache)
 
         return self.create_kv_cache_blocks(new_blocks)

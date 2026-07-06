@@ -53,6 +53,7 @@ class ClientArgs(NamedTuple):
     verbose: bool
     print_content: bool
     verify_output: bool
+    preserve_dataset_assistant_history: bool
     conversation_sampling: ConversationSampling
     request_rate: float
     max_retries: int
@@ -217,6 +218,7 @@ async def send_request(
     min_tokens: int | None = None,
     max_tokens: int | None = None,
     timeout_sec: int = 120,
+    request_id: str | None = None,
 ) -> ServerResponse:
     payload = {
         "model": model,
@@ -236,6 +238,8 @@ async def send_request(
         payload["max_tokens"] = max_tokens
 
     headers = {"Content-Type": "application/json"}
+    if request_id is not None:
+        headers["X-Request-Id"] = request_id
 
     # Calculate the timeout for the request
     if max_tokens is not None:
@@ -365,6 +369,7 @@ async def send_turn(
     req_args: RequestArgs,
     verbose: bool,
     verify_output: bool,
+    preserve_dataset_assistant_history: bool,
 ) -> RequestStats | None:
     assert messages_to_use > 0
     assert messages_to_use <= len(conversation_messages)
@@ -419,6 +424,7 @@ async def send_turn(
         min_tokens,
         max_tokens,
         req_args.timeout_sec,
+        request_id=conv_id,
     )
 
     if response.valid is False:
@@ -508,8 +514,10 @@ async def send_turn(
             if orig_content != output_content:
                 raise ValueError(debug_info)
 
-        # Update the answer
-        conversation_messages[answer_index]["content"] = output_content
+        # By default, the next turn uses the model output as history.
+        # Trace-driven replay can keep dataset answers to preserve real context.
+        if not preserve_dataset_assistant_history:
+            conversation_messages[answer_index]["content"] = output_content
     else:
         # A user prompt that has no answer, add the answer as a new message
         new_answer = {"role": "assistant", "content": output_content}
@@ -692,6 +700,7 @@ async def client_main(
                         req_args,
                         args.print_content,
                         args.verify_output,
+                        args.preserve_dataset_assistant_history,
                     )
                     if result is not None:
                         result_queue.put(result)
@@ -833,8 +842,8 @@ def get_client_config(
             "must be equal or greater than the number of clients"
         )
 
-    # Skip the first user turn (as part of the warmup)
-    skip_first_turn = args.warmup_step
+    # Skip the first user turn (as part of the warmup or resumed-turn benchmarking)
+    skip_first_turn = args.warmup_step or args.skip_first_turn
 
     # Common arguments for all clients
     client_args = ClientArgs(
@@ -846,6 +855,7 @@ def get_client_config(
         verbose=args.verbose,
         print_content=args.print_content,
         verify_output=args.verify_output,
+        preserve_dataset_assistant_history=args.preserve_dataset_assistant_history,
         conversation_sampling=args.conversation_sampling,
         request_rate=args.request_rate,
         max_retries=args.max_retries,
@@ -1347,6 +1357,13 @@ async def main() -> None:
         help="Run a warmup step (using only the first turn of every conversation), "
         "measurements will not be included in the final benchmark results",
     )
+    parser.add_argument(
+        "--skip-first-turn",
+        default=False,
+        action="store_true",
+        help="Skip the first user turn of every conversation during benchmarking. "
+        "Useful when a separate warmup pass has already populated the first turn.",
+    )
 
     parser.add_argument(
         "--max-turns",
@@ -1416,6 +1433,16 @@ async def main() -> None:
         default=False,
         action="store_true",
         help="Verify the LLM output (compare to the answers in the input JSON file)",
+    )
+    parser.add_argument(
+        "--preserve-dataset-assistant-history",
+        default=False,
+        action="store_true",
+        help=(
+            "Keep assistant messages from the input dataset as future history "
+            "instead of replacing them with generated output. This preserves "
+            "trace context while allowing short measured generations."
+        ),
     )
     parser.add_argument(
         "--request-timeout-sec",
