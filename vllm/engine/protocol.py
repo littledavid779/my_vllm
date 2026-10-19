@@ -147,6 +147,10 @@ class EngineClient(ABC):
         """Reset the prefix cache and optionally any configured connector cache"""
         ...
 
+    async def get_value_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        """Get experimental GPU KV value eviction policy stats."""
+        raise NotImplementedError
+
     @abstractmethod
     async def sleep(self, level: int = 1, mode: "PauseMode" = "abort") -> None:
         """Sleep the engine"""

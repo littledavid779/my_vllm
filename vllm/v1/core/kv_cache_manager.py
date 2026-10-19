@@ -368,27 +368,35 @@ class KVCacheManager:
             # Cannot allocate new blocks
             return None
 
-        if (
-            new_computed_block_list is not self.empty_kv_cache_blocks.blocks
-            or num_external_computed_tokens > 0
-        ):
-            # 开题阶段代码阅读：这里把本地命中的 blocks 和 external
-            # 待恢复的 tokens 接到当前 request 的 block table 中。
-            # Append the new computed blocks to the request blocks until now to
-            # avoid the case where the new blocks cannot be allocated.
-            self.coordinator.allocate_new_computed_blocks(
-                request_id=request.request_id,
-                new_computed_blocks=new_computed_block_list,
-                num_local_computed_tokens=num_local_computed_tokens,
-                num_external_computed_tokens=num_external_computed_tokens,
-            )
-
-        new_blocks = self.coordinator.allocate_new_blocks(
-            request.request_id,
-            num_tokens_need_slot,
-            num_tokens_main_model,
-            num_encoder_tokens,
+        local_hit_tokens = max(
+            num_new_computed_tokens,
+            request.num_cached_tokens if request.num_cached_tokens >= 0 else 0,
         )
+        self.block_pool.set_value_policy_allocation_context(local_hit_tokens)
+        try:
+            if (
+                new_computed_block_list is not self.empty_kv_cache_blocks.blocks
+                or num_external_computed_tokens > 0
+            ):
+                # 开题阶段代码阅读：这里把本地命中的 blocks 和 external
+                # 待恢复的 tokens 接到当前 request 的 block table 中。
+                # Append the new computed blocks to the request blocks until now
+                # to avoid the case where the new blocks cannot be allocated.
+                self.coordinator.allocate_new_computed_blocks(
+                    request_id=request.request_id,
+                    new_computed_blocks=new_computed_block_list,
+                    num_local_computed_tokens=num_local_computed_tokens,
+                    num_external_computed_tokens=num_external_computed_tokens,
+                )
+
+            new_blocks = self.coordinator.allocate_new_blocks(
+                request.request_id,
+                num_tokens_need_slot,
+                num_tokens_main_model,
+                num_encoder_tokens,
+            )
+        finally:
+            self.block_pool.clear_value_policy_allocation_context()
 
         # P/D: delay caching blocks if we have to recv from
         # remote. Update state for locally cached blocks.

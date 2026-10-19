@@ -16,6 +16,7 @@ from vllm.platforms import current_platform
 from vllm.utils.network_utils import get_distributed_init_method, get_ip, get_open_port
 from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
 from vllm.v1.executor.abstract import Executor
+from vllm.v1.kv_offload import restore_host_trace, restore_trace
 from vllm.v1.outputs import AsyncModelRunnerOutput, DraftTokenIds, ModelRunnerOutput
 from vllm.v1.serial_utils import run_method
 from vllm.v1.worker.worker_base import WorkerWrapperBase
@@ -76,20 +77,33 @@ class UniProcExecutor(Executor):
 
         if not non_block:
             result = run_method(self.driver_worker, method, args, kwargs)
+            restore_trace.stamp_output(
+                result, "executor_output_ready_s", executor="UniProcExecutor"
+            )
             return result if single_value else [result]
 
         try:
             result = run_method(self.driver_worker, method, args, kwargs)
+            restore_host_trace.mark("executor_output_dispatch")
             if isinstance(result, AsyncModelRunnerOutput):
                 if (async_thread := self.async_output_thread) is not None:
                     if single_value:
+                        if restore_trace.OUTPUT_TRACE_ENABLED:
+                            return async_thread.submit(
+                                restore_trace.get_traced_output, result
+                            )
                         return async_thread.submit(result.get_output)
 
                     def get_output_list() -> list[Any]:
+                        if restore_trace.OUTPUT_TRACE_ENABLED:
+                            return [restore_trace.get_traced_output(result)]
                         return [result.get_output()]
 
                     return async_thread.submit(get_output_list)
                 result = result.get_output()
+            restore_trace.stamp_output(
+                result, "executor_output_ready_s", executor="UniProcExecutor"
+            )
             future = Future[Any]()
             future.set_result(result if single_value else [result])
         except Exception as e:

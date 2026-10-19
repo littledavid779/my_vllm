@@ -3,6 +3,7 @@
 import copy
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -16,7 +17,9 @@ from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorRole
 from vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector import (
     OffloadingConnector,
     OffloadingConnectorMetadata,
+    OffloadingConnectorScheduler,
     OffloadingConnectorStats,
+    OffloadingConnectorWorker,
 )
 from vllm.forward_context import ForwardContext
 from vllm.utils.hashing import sha256
@@ -667,6 +670,435 @@ def test_offloading_connector(request_runner, async_scheduling: bool):
     assert isinstance(event, BlockRemoved)
     assert event.block_hashes == to_hashes([4, 5, 6])
     assert event.medium == "B"
+
+
+def _make_promotion_scheduler(
+    promotion_policy: str,
+    *,
+    track_cost_events: bool = False,
+    max_cost_events: int = 4096,
+    lifecycle_policy: dict | None = None,
+) -> tuple[OffloadingConnectorScheduler, MagicMock]:
+    manager = MagicMock(spec=OffloadingManager)
+    manager.lookup.return_value = 1
+    spec = SimpleNamespace(
+        gpu_block_size=(4,),
+        block_size_factor=3,
+        get_manager=lambda: manager,
+        extra_config={
+            "promotion_policy": promotion_policy,
+            "track_cost_events": track_cost_events,
+            "max_cost_events": max_cost_events,
+            **(
+                {"lifecycle_policy": lifecycle_policy}
+                if lifecycle_policy is not None
+                else {}
+            ),
+        },
+        vllm_config=SimpleNamespace(
+            cache_config=SimpleNamespace(enable_prefix_caching=True)
+        ),
+    )
+    return OffloadingConnectorScheduler(spec), manager
+
+
+@pytest.mark.parametrize(
+    ("promotion_policy", "expected_result", "expected_action"),
+    [
+        ("always_restore", (12, True), "restore"),
+        ("always_recompute", (0, False), "recompute"),
+    ],
+)
+def test_offloading_promotion_policy(
+    promotion_policy: str,
+    expected_result: tuple[int, bool],
+    expected_action: str,
+):
+    scheduler, manager = _make_promotion_scheduler(promotion_policy)
+    request = SimpleNamespace(
+        request_id="promotion-request",
+        num_tokens=12,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == expected_result
+    manager.touch.assert_called_once()
+    manager.lookup.assert_called_once()
+
+    stats = scheduler.get_value_policy_stats()
+    assert stats["offload_promotion_policy"] == promotion_policy
+    assert stats["offload_promotion_decision_count"] == 1
+    assert stats["offload_promotion_candidate_blocks"] == 1
+    assert stats["offload_promotion_candidate_tokens"] == 12
+    assert stats[f"offload_promotion_{expected_action}_decision_count"] == 1
+    other_action = "recompute" if expected_action == "restore" else "restore"
+    assert stats[f"offload_promotion_{other_action}_decision_count"] == 0
+
+    reset_stats = scheduler.get_value_policy_stats(reset=True)
+    assert reset_stats["offload_promotion_decision_count"] == 1
+    assert scheduler.get_value_policy_stats()["offload_promotion_decision_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "restore_s,expected", [(0.002, (12, True)), (0.020, (0, False))]
+)
+def test_lifecycle_promotion_feedback_without_cost_event_logging(restore_s, expected):
+    scheduler, manager = _make_promotion_scheduler(
+        "cost_aware",
+        lifecycle_policy={
+            "store_s_per_block": 0.001,
+            "restore_s_per_block": restore_s,
+            "recompute_s_per_token": 0.001,
+            "min_cost_samples": 1,
+        },
+    )
+    request = SimpleNamespace(
+        request_id="online",
+        num_tokens=12,
+        num_computed_tokens=0,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+    policy = scheduler.lifecycle_policy
+    now = [10.0]
+    policy.clock = lambda: now[0]
+    policy.window_start = now[0]
+    assert scheduler.get_num_new_matched_tokens(request, 0) == expected
+    assert scheduler.get_num_new_matched_tokens(request, 0) == expected
+    action = "restore" if expected[1] else "recompute"
+    assert policy.counters[f"{action}_decisions"] == 1
+    # Stats collection must preserve the in-flight observation.
+    scheduler.get_value_policy_stats(reset=True)
+    now[0] += 0.010
+    if action == "restore":
+        scheduler._reqs_being_loaded["online"].add(request.block_hashes[-1])
+        scheduler.update_connector_output(
+            KVConnectorOutput(finished_recving={"online"})
+        )
+        manager.complete_load.assert_called_once()
+    else:
+        request.num_computed_tokens = 8
+        scheduler._complete_recompute_cost_event(request)
+        assert "online" in policy.pending
+        request.num_computed_tokens = 12
+        scheduler._complete_recompute_cost_event(request)
+    assert not policy.pending
+    assert policy.counters[f"{action}_observations"] == 1
+    assert policy.estimate(action, 1, 12) == pytest.approx(0.010)
+
+
+@pytest.mark.parametrize("action", ["restore", "recompute"])
+def test_lifecycle_fixed_promotion_override(action):
+    scheduler, _ = _make_promotion_scheduler(
+        f"always_{action}",
+        lifecycle_policy={
+            "store_s_per_block": 0.001,
+            "restore_s_per_block": 0.020 if action == "restore" else 0.001,
+            "recompute_s_per_token": 0.001,
+        },
+    )
+    request = SimpleNamespace(
+        request_id="override",
+        num_tokens=12,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (
+        (12, True) if action == "restore" else (0, False)
+    )
+
+
+def test_lifecycle_cost_aware_requires_explicit_calibration():
+    with pytest.raises(ValueError, match="requires lifecycle_policy"):
+        _make_promotion_scheduler("cost_aware")
+
+
+def test_admission_trace_requires_cost_events():
+    with pytest.raises(ValueError, match="trace_admission requires"):
+        _make_promotion_scheduler(
+            "cost_aware",
+            lifecycle_policy={
+                "store_s_per_block": 0.001,
+                "restore_s_per_block": 0.002,
+                "recompute_s_per_token": 0.001,
+                "trace_admission": True,
+            },
+        )
+
+
+def test_admission_trace_links_rejection_to_zero_hit_lookup():
+    from scripts.summarize_lifecycle_admission import summarize_stats
+    from vllm.v1.kv_offload.backends.cpu import CPUBackend
+    from vllm.v1.kv_offload.lru_manager import LRUOffloadingManager
+
+    scheduler, _ = _make_promotion_scheduler(
+        "cost_aware",
+        track_cost_events=True,
+        lifecycle_policy={
+            "store_s_per_block": 0.1,
+            "restore_s_per_block": 0.002,
+            "recompute_s_per_token": 0.001,
+            "trace_admission": True,
+        },
+    )
+    backing = LRUOffloadingManager(CPUBackend(block_size=12, num_blocks=16))
+    scheduler.lifecycle_policy._backing = backing
+    request = SimpleNamespace(
+        request_id="later",
+        num_tokens=36,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(9)],
+    )
+    hashes = list(scheduler._get_block_hashes(request))
+    # The first block is rejected; two downstream blocks are ready in CPU.
+    output = scheduler.manager.prepare_store(hashes[:1])
+    scheduler._record_admission_diagnostic("earlier", 0, hashes[:1], output)
+    backing.prepare_store(hashes[1:])
+    backing.complete_store(hashes[1:])
+    for _ in range(2):
+        assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    stats = scheduler.get_value_policy_stats()
+    summary = summarize_stats(stats)
+    assert summary["counts"]["lookup_attempts"] == 2
+    assert summary["counts"]["first_gap_with_prior_rejection"] == 1
+    assert summary["counts"]["adjacent_ready_after_rejected_gap"] == 2
+    assert summary["distinct_request_rejected_block_demand_pairs"] == 1
+    events = stats["offload_cost_events"]
+    assert events[0]["candidate_block_ids"][0] == events[1]["candidate_block_ids"][0]
+
+
+def test_lifecycle_request_finish_discards_incomplete_recompute():
+    scheduler, _ = _make_promotion_scheduler(
+        "always_recompute",
+        lifecycle_policy={
+            "store_s_per_block": 0.001,
+            "restore_s_per_block": 0.002,
+            "recompute_s_per_token": 0.001,
+        },
+    )
+    request = SimpleNamespace(
+        request_id="cancelled",
+        num_tokens=12,
+        num_computed_tokens=4,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+    scheduler.get_num_new_matched_tokens(request, 0)
+    assert scheduler.request_finished(request, []) == (False, None)
+    policy = scheduler.lifecycle_policy
+    assert not policy.pending and not policy.costs
+    assert policy.counters["incomplete_promotions"] == 1
+
+
+def test_offloading_rejects_unknown_promotion_policy():
+    with pytest.raises(ValueError, match="promotion_policy"):
+        _make_promotion_scheduler("unknown")
+
+
+def test_offloading_cost_events_track_promotion_and_transfer():
+    scheduler, manager = _make_promotion_scheduler(
+        "always_restore", track_cost_events=True
+    )
+    block_hashes = [BlockHash(str(i).encode()) for i in range(3)]
+    request = SimpleNamespace(
+        request_id="cost-request",
+        num_tokens=12,
+        block_hashes=block_hashes,
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (12, True)
+    event = scheduler.get_value_policy_stats()["offload_cost_events"][0]
+    assert event["event_type"] == "promotion"
+    assert event["request_id"] == "cost-request"
+    assert event["action"] == "restore"
+    assert event["candidate_blocks"] == 1
+    assert event["candidate_tokens"] == 12
+    assert event["block_ids"] == [0]
+    assert isinstance(event["lookup_wall_time_s"], float)
+
+    event_id = event["event_id"]
+    scheduler._pending_load_cost_event_ids.pop("cost-request")
+    scheduler._active_load_cost_event_ids["cost-request"] = event_id
+    scheduler._reqs_being_loaded["cost-request"].add(block_hashes[-1])
+    transfer_stats = OffloadingConnectorStats()
+    transfer_stats.record_transfer(
+        num_bytes=1024,
+        time=0.002,
+        transfer_type=("CPU", "GPU"),
+        event_id=event_id,
+        request_id="cost-request",
+        block_count=1,
+        submit_to_complete_time=0.003,
+    )
+    scheduler.update_connector_output(
+        KVConnectorOutput(
+            finished_recving={"cost-request"},
+            kv_connector_stats=transfer_stats,
+        )
+    )
+
+    event = scheduler.get_value_policy_stats()["offload_cost_events"][0]
+    assert event["dma_bytes"] == 1024
+    assert event["dma_time_s"] == 0.002
+    assert event["submit_to_complete_s"] == 0.003
+    assert event["restore_wait_s"] >= 0
+    assert event["transfer_observations"][0]["blocks"] == 1
+    manager.complete_load.assert_called_once_with({block_hashes[-1]})
+
+
+def test_offloading_cost_events_track_recompute_completion():
+    scheduler, _ = _make_promotion_scheduler("always_recompute", track_cost_events=True)
+    request = SimpleNamespace(
+        request_id="recompute-request",
+        num_tokens=12,
+        num_computed_tokens=0,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    event = scheduler.get_value_policy_stats()["offload_cost_events"][0]
+    assert event["action"] == "recompute"
+    assert event["target_computed_tokens"] == 12
+
+    request.num_computed_tokens = 8
+    scheduler._complete_recompute_cost_event(request)
+    event = scheduler.get_value_policy_stats()["offload_cost_events"][0]
+    assert "recompute_wait_s" not in event
+
+    request.num_computed_tokens = 12
+    scheduler._complete_recompute_cost_event(request)
+    event = scheduler.get_value_policy_stats()["offload_cost_events"][0]
+    assert event["observed_num_computed_tokens"] == 12
+    assert event["recompute_wait_s"] >= 0
+    assert "recompute_incomplete" not in event
+
+
+def test_offloading_cost_events_are_bounded_and_resettable():
+    scheduler, manager = _make_promotion_scheduler(
+        "always_recompute", track_cost_events=True, max_cost_events=1
+    )
+    request = SimpleNamespace(
+        request_id="cost-request",
+        num_tokens=12,
+        block_hashes=[BlockHash(str(i).encode()) for i in range(3)],
+    )
+
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    assert scheduler.get_num_new_matched_tokens(request, 0) == (0, False)
+    stats = scheduler.get_value_policy_stats()
+    assert stats["offload_cost_events_retained"] == 1
+    assert stats["offload_cost_events_dropped"] == 1
+    assert stats["offload_cost_events"][0]["event_id"] == 1
+
+    reset_stats = scheduler.get_value_policy_stats(reset=True)
+    assert reset_stats["offload_cost_events_retained"] == 1
+    stats = scheduler.get_value_policy_stats()
+    assert stats["offload_cost_events_retained"] == 0
+    assert stats["offload_cost_events_dropped"] == 0
+    manager.lookup.assert_called()
+
+
+def test_offloading_worker_attaches_cost_event_to_transfer_stats():
+    worker = OffloadingConnectorWorker(
+        SimpleNamespace(extra_config={"track_cost_events": True})
+    )
+    worker.worker = MagicMock()
+    worker.worker.transfer_async.return_value = True
+    transfer_spec = (MagicMock(), MagicMock())
+    metadata = OffloadingConnectorMetadata(
+        reqs_to_load={"cost-request": transfer_spec},
+        reqs_to_store={},
+        load_cost_events={"cost-request": (7, 3)},
+        store_cost_events={},
+    )
+
+    worker.start_kv_transfers(metadata)
+    worker.worker.get_finished.return_value = [
+        TransferResult(
+            job_id=0,
+            success=True,
+            transfer_size=2048,
+            transfer_time=0.004,
+            transfer_type=("CPU", "GPU"),
+        )
+    ]
+    finished_sending, finished_recving = worker.get_finished(set())
+
+    assert finished_sending == set()
+    assert finished_recving == {"cost-request"}
+    stats = worker.get_kv_connector_stats()
+    assert isinstance(stats, OffloadingConnectorStats)
+    operation = stats.data["CPU_to_GPU"][0]
+    assert operation.event_id == 7
+    assert operation.request_id == "cost-request"
+    assert operation.block_count == 3
+    assert operation.submit_to_complete_time is not None
+    assert operation.submit_to_complete_time >= 0
+
+
+def test_store_host_cost_separates_submit_wait_and_completion(monkeypatch):
+    worker = OffloadingConnectorWorker(
+        SimpleNamespace(extra_config={"track_cost_events": True})
+    )
+    worker.worker = MagicMock()
+    now = [0.0]
+    monkeypatch.setattr(
+        "vllm.distributed.kv_transfer.kv_connector.v1.offloading_connector.time.perf_counter",
+        lambda: now[0],
+    )
+
+    def transfer(*args):
+        now[0] += 0.001
+        return True
+
+    def wait(*args):
+        now[0] += 0.008
+
+    worker.worker.transfer_async.side_effect = transfer
+    worker.worker.wait.side_effect = wait
+    for event_id, blocks in [(0, 1), (1, 3)]:
+        worker.prepare_store_kv(
+            OffloadingConnectorMetadata(
+                reqs_to_load={},
+                reqs_to_store={"a": (MagicMock(), MagicMock())},
+                load_cost_events={},
+                store_cost_events={"a": (event_id, blocks)},
+            )
+        )
+    worker.handle_preemptions({"a"})
+    assert sum(
+        job.blocking_wait_time for job in worker._jobs.values()
+    ) == pytest.approx(0.008)
+    assert worker._jobs[0].blocking_wait_time == pytest.approx(0.002)
+    assert worker._jobs[1].blocking_wait_time == pytest.approx(0.006)
+    now[0] = 1.0  # delayed polling is not added to host service cost
+    worker.worker.get_finished.return_value = [
+        TransferResult(
+            job_id=i,
+            success=True,
+            transfer_size=1024,
+            transfer_time=0.0001,
+            transfer_type=("GPU", "CPU"),
+        )
+        for i in (0, 1)
+    ]
+    worker.get_finished(set())
+    stats = worker.get_kv_connector_stats()
+    scheduler, _ = _make_promotion_scheduler("always_restore", track_cost_events=True)
+    for _ in range(2):
+        scheduler._append_cost_event(
+            {"event_type": "store", "prepare_store_wall_time_s": 0.0005}
+        )
+    scheduler._record_completed_transfer_metrics(stats)
+    events = scheduler.get_value_policy_stats()["offload_cost_events"]
+    assert events[0]["store_host_service_s"] == pytest.approx(0.0035)
+    assert events[1]["store_host_service_s"] == pytest.approx(0.0075)
+    assert events[0]["submit_to_complete_s"] == 1.0
+    # Old traces do not silently become zero-cost host-service observations.
+    old = OffloadingConnectorStats()
+    old.record_transfer(1024, 0.0001, ("GPU", "CPU"), event_id=2)
+    scheduler._append_cost_event({"event_type": "store"})
+    scheduler._record_completed_transfer_metrics(old)
+    assert (
+        "store_host_service_s"
+        not in scheduler.get_value_policy_stats()["offload_cost_events"][2]
+    )
 
 
 @pytest.mark.parametrize("async_scheduling", [True, False])

@@ -560,6 +560,9 @@ class AsyncLLM(EngineClient):
 
         q: RequestOutputCollector | None = None
         try:
+            # `generate()` 是异步服务路径上的入口。它和 `LLM.generate()` 不同，
+            # 不会在当前协程里自己跑一个 `step()` while-loop，而是先注册请求，
+            # 再等待后台输出任务把这个请求的增量结果推到当前队列里。
             q = await self.add_request(
                 request_id,
                 prompt,
@@ -573,8 +576,8 @@ class AsyncLLM(EngineClient):
                 reasoning_ended=reasoning_ended,
             )
 
-            # The output_handler task pushes items into the queue.
-            # This task pulls from the queue and yields to caller.
+            # output_handler 后台任务会持续往队列里推数据。
+            # 这里本身只负责把“当前这个请求”的那一路结果取出来并 yield 给调用方。
             finished = False
             while not finished:
                 # Note: drain queue without await if possible (avoids
@@ -659,6 +662,10 @@ class AsyncLLM(EngineClient):
         async def output_handler():
             try:
                 while True:
+                    # 这里可以看作同步版 `LLMEngine.step()` 消费侧的异步对应物：
+                    # 1. 等待一批 EngineCoreOutputs；
+                    # 2. 把它们转成 RequestOutputs；
+                    # 3. 再按 request_id 分发到各自所属的请求队列里。
                     # 1) Pull EngineCoreOutputs from the EngineCore.
                     outputs = await engine_core.get_output_async()
                     num_outputs = len(outputs.outputs)
@@ -898,6 +905,9 @@ class AsyncLLM(EngineClient):
         return await self.engine_core.reset_prefix_cache_async(
             reset_running_requests, reset_connector
         )
+
+    async def get_value_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        return await self.engine_core.get_value_policy_stats_async(reset=reset)
 
     async def reset_encoder_cache(self) -> None:
         await self.engine_core.reset_encoder_cache_async()

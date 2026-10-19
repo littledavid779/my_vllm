@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import argparse
 import asyncio
+import csv
 import json
 import logging
 import multiprocessing as mp
@@ -12,6 +13,7 @@ from collections import Counter, deque
 from datetime import datetime
 from enum import Enum
 from http import HTTPStatus
+from pathlib import Path
 from statistics import mean
 from typing import NamedTuple
 
@@ -66,12 +68,14 @@ class RequestArgs(NamedTuple):
     limit_min_tokens: int  # Use negative value for no limit
     limit_max_tokens: int  # Use negative value for no limit
     timeout_sec: int
+    correlate_requests: bool = False
 
 
 class BenchmarkArgs(NamedTuple):
     url: str
     num_clients: int
     early_stop: bool
+    fixed_client_assignment: bool = False
 
 
 class ServerResponse(NamedTuple):
@@ -101,6 +105,7 @@ class RequestStats(NamedTuple):
     approx_cached_percent: float
     conversation_id: str
     client_id: int
+    external_request_id: str = ""
 
     def __str__(self) -> str:
         return (
@@ -414,6 +419,10 @@ async def send_turn(
         if max_tokens == NUM_TOKENS_FROM_DATASET:
             max_tokens = max(1, answer_num_tokens)
 
+    # Opt-in correlation preserves the old conversation-only header by default.
+    external_request_id = (
+        f"{conv_id}-turn{messages_to_use}" if req_args.correlate_requests else conv_id
+    )
     # Send the current conversation to LLM and get a response
     response: ServerResponse = await send_request(
         session,
@@ -424,7 +433,7 @@ async def send_turn(
         min_tokens,
         max_tokens,
         req_args.timeout_sec,
-        request_id=conv_id,
+        request_id=external_request_id,
     )
 
     if response.valid is False:
@@ -486,6 +495,7 @@ async def send_turn(
         approx_cached_percent=approx_cached_percent,
         conversation_id=conv_id,
         client_id=client_id,
+        external_request_id=external_request_id if req_args.correlate_requests else "",
     )
 
     if verbose:
@@ -594,7 +604,7 @@ async def client_main(
     async with aiohttp.ClientSession() as session:
         # Print progress
 
-        while task_queue_empty is False:
+        while not task_queue_empty or active_convs:
             result = None
 
             if (
@@ -648,7 +658,7 @@ async def client_main(
                         f"{Color.YELLOW}Client {client_id} will not use conversation ID {conv_id} (all {len(messages)} messages already sent){Color.RESET}"  # noqa: E501
                     )
 
-            if len(active_convs) == 0 or task_queue_empty:
+            if len(active_convs) == 0:
                 logger.info(
                     f"{Color.YELLOW}Client {client_id} has no more work{Color.RESET}"
                 )
@@ -669,7 +679,7 @@ async def client_main(
             turns_count[conv_id] += 1
             current_turn = turns_count[conv_id]
 
-            assert current_turn < len(messages), (
+            assert current_turn <= len(messages), (
                 f"Turn number {current_turn} is invalid for conversation ID {conv_id}"
                 f" that has only {len(messages)} messages"
             )
@@ -873,6 +883,8 @@ def get_client_config(
 
     if args.request_timeout_sec <= 0:
         raise ValueError("Request timeout must be a positive number")
+    if args.correlate_requests and args.max_retries:
+        raise ValueError("Request correlation requires --max-retries 0")
 
     # Arguments for API requests
     chat_url = f"{args.url}/v1/chat/completions"
@@ -885,6 +897,7 @@ def get_client_config(
         limit_min_tokens=args.limit_min_tokens,
         limit_max_tokens=args.limit_max_tokens,
         timeout_sec=args.request_timeout_sec,
+        correlate_requests=args.correlate_requests,
     )
 
     return client_args, req_args
@@ -901,7 +914,12 @@ async def main_mp(
     stop_event = mp.Event()
 
     # Queue for input conversations (from the input file/dataset)
-    task_queue: mp.Queue = mp.Queue()
+    task_queues = [
+        mp.Queue()
+        for _ in range(
+            bench_args.num_clients if bench_args.fixed_client_assignment else 1
+        )
+    ]
 
     # Queue for client measurements (TTFT, TPOT, etc. for each request)
     result_queue: mp.Queue = mp.Queue()
@@ -926,7 +944,7 @@ async def main_mp(
                 client_args,
                 req_args,
                 stop_event,
-                task_queue,
+                task_queues[client_id if bench_args.fixed_client_assignment else 0],
                 result_queue,
                 conv_queue,
             ),
@@ -935,12 +953,18 @@ async def main_mp(
         client.start()
 
     # Submit all the input conversations as tasks for the clients
-    for conv_id, messages in input_conv.items():
-        task_queue.put((conv_id, messages))
+    for index, (conv_id, messages) in enumerate(input_conv.items()):
+        queue_index = (
+            index % bench_args.num_clients
+            if (bench_args.fixed_client_assignment)
+            else 0
+        )
+        task_queues[queue_index].put((conv_id, messages))
 
     # Add termination signals for clients
-    for _ in range(bench_args.num_clients):
-        task_queue.put((TERM_SIGNAL, TERM_SIGNAL))
+    for client_id in range(bench_args.num_clients):
+        queue_index = client_id if bench_args.fixed_client_assignment else 0
+        task_queues[queue_index].put((TERM_SIGNAL, TERM_SIGNAL))
 
     # Collect the updated conversations from all clients
     num_clients_finished = 0
@@ -1050,9 +1074,10 @@ async def main_mp(
 
     # Queues should be closed, required to avoid hang at interpreter shutdown
     unfinished_tasks = 0
-    while not task_queue.empty():
-        task_queue.get()
-        unfinished_tasks += 1
+    for task_queue in task_queues:
+        while not task_queue.empty():
+            task_queue.get()
+            unfinished_tasks += 1
 
     if unfinished_tasks > 0:
         # Can happen if not all tasks (conversations) have finished.
@@ -1060,14 +1085,12 @@ async def main_mp(
         # or if an error occurred in one of the clients.
         logger.debug(f"Discarding {unfinished_tasks} unfinished tasks")
 
-    task_queue.close()
-    task_queue.join_thread()
-
-    result_queue.close()
-    result_queue.join_thread()
-
-    conv_queue.close()
-    conv_queue.join_thread()
+    # The parent can still have queue feeder threads with buffered objects here,
+    # especially when --max-num-requests leaves many tasks unconsumed. Joining
+    # those feeder threads can hang after all benchmark results are collected.
+    for queue in (*task_queues, result_queue, conv_queue):
+        queue.cancel_join_thread()
+        queue.close()
 
     return output_conv, client_metrics
 
@@ -1130,6 +1153,7 @@ def process_statistics(
     # Exclude parameters from RequestStats
     exclude = [
         "start_time_ms",
+        "external_request_id",
         "end_time_ms",
         "output_num_first_chunk_tokens",
         "approx_cached_percent",
@@ -1250,6 +1274,86 @@ def process_statistics(
         )
 
 
+def write_request_summary_csv(path: str, client_metrics: list[RequestStats]) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = [
+        "run_id",
+        "variant",
+        "request_id",
+        "conversation_id",
+        "client_id",
+        "ttft_ms",
+        "tpot_ms",
+        "latency_ms",
+        "e2e_ms",
+        "input_num_turns",
+        "input_num_tokens",
+        "output_num_tokens",
+        "output_num_chunks",
+        "output_num_first_chunk_tokens",
+        "approx_cached_percent",
+        "start_time_ms",
+        "external_request_id",
+    ]
+    run_id = output_path.parent.name
+    with output_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for request_id, item in enumerate(
+            sorted(client_metrics, key=lambda metric: metric.start_time_ms)
+        ):
+            writer.writerow(
+                {
+                    "run_id": run_id,
+                    "variant": "online_server",
+                    "request_id": request_id,
+                    "conversation_id": item.conversation_id,
+                    "client_id": item.client_id,
+                    "ttft_ms": item.ttft_ms,
+                    "tpot_ms": item.tpot_ms,
+                    "latency_ms": item.latency_ms,
+                    "e2e_ms": item.latency_ms,
+                    "input_num_turns": item.input_num_turns,
+                    "input_num_tokens": item.input_num_tokens,
+                    "output_num_tokens": item.output_num_tokens,
+                    "output_num_chunks": item.output_num_chunks,
+                    "output_num_first_chunk_tokens": item.output_num_first_chunk_tokens,
+                    "approx_cached_percent": item.approx_cached_percent,
+                    "start_time_ms": item.start_time_ms,
+                    "external_request_id": item.external_request_id,
+                }
+            )
+
+
+async def fetch_value_policy_stats(url: str, reset: bool = False) -> dict:
+    stats_url = f"{url}/debug/value_policy_stats"
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with (
+        aiohttp.ClientSession(timeout=timeout) as session,
+        session.get(stats_url, params={"reset": str(reset).lower()}) as response,
+    ):
+        text = await response.text()
+        if HTTPStatus(response.status) == HTTPStatus.OK:
+            return json.loads(text)
+        return {
+            "source": "unavailable",
+            "status": response.status,
+            "error": text,
+        }
+
+
+async def write_value_policy_stats_json(
+    path: str, url: str, reset: bool = False
+) -> None:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = await fetch_value_policy_stats(url, reset=reset)
+    output_path.write_text(
+        json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+
+
 async def get_server_info(url: str) -> None:
     logger.info(f"{Color.BLUE}Collecting information from server: {url}{Color.RESET}")
     async with aiohttp.ClientSession() as session:
@@ -1299,6 +1403,23 @@ async def main() -> None:
         type=str,
         default=None,
         help="Output JSON file containing conversations with updated assistant answers",
+    )
+    parser.add_argument(
+        "--request-summary-output",
+        type=str,
+        default=None,
+        help="Optional CSV path for per-request benchmark metrics.",
+    )
+    parser.add_argument(
+        "--value-policy-stats-output",
+        type=str,
+        default=None,
+        help="Optional JSON path for experimental online value-policy stats.",
+    )
+    parser.add_argument(
+        "--reset-value-policy-stats-after-fetch",
+        action="store_true",
+        help="Reset online value-policy counters after writing the stats JSON.",
     )
 
     parser.add_argument(
@@ -1416,6 +1537,20 @@ async def main() -> None:
         "Set to higher values to retry failed requests and maintain "
         "fair workload distribution. "
         "Can also be set via MULTITURN_BENCH_MAX_RETRIES environment variable.",
+    )
+    parser.add_argument(
+        "--correlate-requests",
+        action="store_true",
+        default=os.environ.get("MULTITURN_CORRELATE_REQUESTS", "0") == "1",
+        help="Include the message count in X-Request-Id and retain it in CSV. "
+        "Requires zero retries. Owner-aware cache experiments must map these "
+        "IDs back to their original conversation owners on the server.",
+    )
+    parser.add_argument(
+        "--fixed-client-assignment",
+        action="store_true",
+        help="Assign input conversation i to client i modulo num_clients. "
+        "Does not fix global arrival order or disable request limits.",
     )
     parser.add_argument(
         "--conversation-sampling",
@@ -1582,7 +1717,10 @@ async def main() -> None:
     client_args, req_args = get_client_config(args, conversations)
 
     bench_args = BenchmarkArgs(
-        url=args.url, num_clients=args.num_clients, early_stop=not args.no_early_stop
+        url=args.url,
+        num_clients=args.num_clients,
+        early_stop=not args.no_early_stop,
+        fixed_client_assignment=args.fixed_client_assignment,
     )
 
     warmup_runtime_sec: float | None = None
@@ -1687,6 +1825,24 @@ async def main() -> None:
         )
         with open(args.output_file, "w") as f:
             json.dump(output_data, f, indent=4)
+
+    if args.request_summary_output is not None:
+        logger.info(
+            f"{Color.GREEN}Writing request summary: "
+            f"{args.request_summary_output}{Color.RESET}"
+        )
+        write_request_summary_csv(args.request_summary_output, client_metrics)
+
+    if args.value_policy_stats_output is not None:
+        logger.info(
+            f"{Color.GREEN}Writing value-policy stats: "
+            f"{args.value_policy_stats_output}{Color.RESET}"
+        )
+        await write_value_policy_stats_json(
+            args.value_policy_stats_output,
+            args.url,
+            reset=args.reset_value_policy_stats_after_fetch,
+        )
 
 
 if __name__ == "__main__":

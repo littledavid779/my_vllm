@@ -592,4 +592,209 @@ def test_filter_reused_manager():
     assert prepare_store_output is not None
     assert prepare_store_output.block_hashes_to_store == []
 
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_store_threshold"] == 2
+    assert stats["offload_tracker_size"] == 3
+    assert stats["offload_lookup_query_count"] == 4
+    assert stats["offload_lookup_observed_blocks"] == 6
+    assert stats["offload_store_request_count"] == 3
+    assert stats["offload_store_requested_blocks"] == 5
+    assert stats["offload_store_eligible_blocks"] == 1
+    assert stats["offload_store_dropped_blocks"] == 4
+    assert stats["offload_store_actual_blocks"] == 1
+    assert stats["offload_store_evicted_blocks"] == 0
+    assert stats["offload_store_failed_count"] == 0
+
+    reset_snapshot = manager.get_value_policy_stats(reset=True)
+    assert reset_snapshot["offload_store_dropped_blocks"] == 4
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_tracker_size"] == 3
+    assert stats["offload_lookup_query_count"] == 0
+    assert stats["offload_store_requested_blocks"] == 0
+    assert stats["offload_store_dropped_blocks"] == 0
+
     manager.complete_store(to_hashes([1]))
+
+
+def test_filter_reused_manager_threshold_zero_tracks_without_filtering():
+    """
+    Tests FilterReusedOffloadingManager all-block mode with stats.
+    """
+    block_size = 256
+    cpu_backend = CPUBackend(block_size=block_size, num_blocks=4)
+    lru_manager = LRUOffloadingManager(cpu_backend, enable_events=True)
+
+    from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+    manager = FilterReusedOffloadingManager(
+        backing=lru_manager, store_threshold=0, max_tracker_size=3
+    )
+
+    assert manager.lookup(to_hashes([1, 2])) == 0
+    prepare_store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert prepare_store_output is not None
+    assert prepare_store_output.block_hashes_to_store == to_hashes([1, 2])
+
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_store_threshold"] == 0
+    assert stats["offload_store_requested_blocks"] == 2
+    assert stats["offload_store_eligible_blocks"] == 2
+    assert stats["offload_store_dropped_blocks"] == 0
+    assert stats["offload_store_actual_blocks"] == 2
+
+
+def test_filter_reused_manager_tracks_load_and_store_outcomes():
+    block_size = 256
+    cpu_backend = CPUBackend(block_size=block_size, num_blocks=4)
+    lru_manager = LRUOffloadingManager(cpu_backend, enable_events=True)
+
+    from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+    manager = FilterReusedOffloadingManager(
+        backing=lru_manager, store_threshold=0, max_tracker_size=8
+    )
+
+    assert manager.lookup(to_hashes([1, 2])) == 0
+    store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert store_output is not None
+    manager.complete_store(store_output.block_hashes_to_store)
+
+    assert manager.lookup(to_hashes([1, 2, 3])) == 2
+    load_spec = manager.prepare_load(to_hashes([1, 2]))
+    verify_load_output(load_spec, [0, 1])
+    manager.complete_load(to_hashes([1, 2]))
+
+    store_output = manager.prepare_store(to_hashes([1, 3]))
+    assert store_output is not None
+    assert store_output.block_hashes_to_store == to_hashes([3])
+    manager.complete_store(store_output.block_hashes_to_store, success=False)
+
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_lookup_query_count"] == 2
+    assert stats["offload_lookup_observed_blocks"] == 5
+    assert stats["offload_lookup_hit_query_count"] == 1
+    assert stats["offload_lookup_hit_blocks"] == 2
+    assert stats["offload_load_request_count"] == 1
+    assert stats["offload_load_requested_blocks"] == 2
+    assert stats["offload_load_completed_blocks"] == 2
+    assert stats["offload_store_actual_blocks"] == 3
+    assert stats["offload_store_already_present_blocks"] == 1
+    assert stats["offload_store_completed_blocks"] == 2
+    assert stats["offload_store_completion_failed_blocks"] == 1
+
+    manager.get_value_policy_stats(reset=True)
+    reset_stats = manager.get_value_policy_stats()
+    assert reset_stats["offload_lookup_hit_blocks"] == 0
+    assert reset_stats["offload_load_requested_blocks"] == 0
+    assert reset_stats["offload_store_completed_blocks"] == 0
+
+
+def test_filter_reused_manager_can_count_store_attempts():
+    """
+    Tests that dropped store attempts can count toward later admission.
+    """
+    block_size = 256
+    cpu_backend = CPUBackend(block_size=block_size, num_blocks=4)
+    lru_manager = LRUOffloadingManager(cpu_backend, enable_events=True)
+
+    from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+    manager = FilterReusedOffloadingManager(
+        backing=lru_manager,
+        store_threshold=2,
+        max_tracker_size=3,
+        count_store_attempts=True,
+    )
+
+    prepare_store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert prepare_store_output is not None
+    assert prepare_store_output.block_hashes_to_store == []
+    assert manager.counts.get(to_hashes([1])[0]) == 1
+
+    prepare_store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert prepare_store_output is not None
+    assert prepare_store_output.block_hashes_to_store == []
+    assert manager.counts.get(to_hashes([1])[0]) == 2
+
+    prepare_store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert prepare_store_output is not None
+    assert prepare_store_output.block_hashes_to_store == to_hashes([1, 2])
+
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_count_store_attempts"] == 1
+    assert stats["offload_store_requested_blocks"] == 6
+    assert stats["offload_store_eligible_blocks"] == 2
+    assert stats["offload_store_dropped_blocks"] == 4
+    assert stats["offload_store_actual_blocks"] == 2
+
+
+def test_filter_reused_manager_tracks_block_lifecycles():
+    block_size = 256
+    cpu_backend = CPUBackend(block_size=block_size, num_blocks=2)
+    lru_manager = LRUOffloadingManager(cpu_backend, enable_events=True)
+
+    from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+    manager = FilterReusedOffloadingManager(
+        backing=lru_manager,
+        store_threshold=0,
+        max_tracker_size=8,
+        track_lifecycle_stats=True,
+    )
+
+    store_output = manager.prepare_store(to_hashes([1, 2]))
+    assert store_output is not None
+    manager.complete_store(store_output.block_hashes_to_store)
+
+    # Block 1 is reused while resident. Block 2 is evicted before its first
+    # subsequent lookup.
+    assert manager.lookup(to_hashes([1])) == 1
+    store_output = manager.prepare_store(to_hashes([3, 4]))
+    assert store_output is not None
+    assert store_output.block_hashes_evicted == to_hashes([1, 2])
+    manager.complete_store(store_output.block_hashes_to_store)
+
+    # The first hash misses after CPU eviction, so lookup does not inspect 3.
+    assert manager.lookup(to_hashes([2, 3])) == 0
+    assert manager.lookup(to_hashes([3, 4])) == 2
+    load_spec = manager.prepare_load(to_hashes([3, 4]))
+    assert isinstance(load_spec, CPULoadStoreSpec)
+    assert sorted(load_spec.block_ids.tolist()) == [0, 1]
+    manager.complete_load(to_hashes([3, 4]))
+
+    # Store two never-reused blocks to make the final categories observable.
+    store_output = manager.prepare_store(to_hashes([5, 6]))
+    assert store_output is not None
+    manager.complete_store(store_output.block_hashes_to_store)
+
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_lifecycle_stats_enabled"] == 1
+    assert stats["offload_lifecycle_tracked_blocks"] == 6
+    assert stats["offload_lifecycle_tracker_evictions"] == 0
+    assert stats["offload_lifecycle_ever_stored_blocks"] == 6
+    assert stats["offload_lifecycle_resident_blocks"] == 2
+    assert stats["offload_lifecycle_never_looked_up_after_store_blocks"] == 2
+    assert stats["offload_lifecycle_looked_up_after_store_blocks"] == 4
+    assert stats["offload_lifecycle_cpu_hit_after_store_blocks"] == 3
+    assert stats["offload_lifecycle_looked_up_after_eviction_blocks"] == 1
+    assert stats["offload_lifecycle_evicted_before_first_lookup_blocks"] == 1
+    assert stats["offload_lifecycle_loaded_blocks"] == 2
+
+
+def test_filter_reused_manager_disables_lifecycle_tracking_by_default():
+    block_size = 256
+    cpu_backend = CPUBackend(block_size=block_size, num_blocks=2)
+    lru_manager = LRUOffloadingManager(cpu_backend)
+
+    from vllm.v1.kv_offload.reuse_manager import FilterReusedOffloadingManager
+
+    manager = FilterReusedOffloadingManager(
+        backing=lru_manager, store_threshold=0, max_tracker_size=8
+    )
+    store_output = manager.prepare_store(to_hashes([1]))
+    assert store_output is not None
+    manager.complete_store(store_output.block_hashes_to_store)
+
+    stats = manager.get_value_policy_stats()
+    assert stats["offload_lifecycle_stats_enabled"] == 0
+    assert "offload_lifecycle_tracked_blocks" not in stats

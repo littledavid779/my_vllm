@@ -67,6 +67,9 @@ from vllm.v1.engine.utils import (
 )
 from vllm.v1.executor import Executor
 from vllm.v1.kv_cache_interface import KVCacheConfig
+from vllm.v1.kv_offload import restore_host_trace
+from vllm.v1.kv_offload.restore_ready import ReadyRestoreDrain, RestoreReadinessTrace
+from vllm.v1.kv_offload.restore_trace import stamp_output
 from vllm.v1.metrics.stats import SchedulerStats
 from vllm.v1.outputs import ModelRunnerOutput
 from vllm.v1.request import Request, RequestStatus
@@ -209,6 +212,37 @@ class EngineCore:
             self.step if self.batch_queue is None else self.step_with_batch_queue
         )
         self.async_scheduling = vllm_config.scheduler_config.async_scheduling
+
+        self.restore_ready_first: ReadyRestoreDrain | None = None
+        ready_mode = os.environ.get("VLLM_EXPERIMENTAL_RESTORE_READY_FIRST", "off")
+        if ready_mode != "off":
+            from vllm.v1.executor.uniproc_executor import UniProcExecutor
+
+            if (
+                type(self.model_executor) is not UniProcExecutor
+                or vllm_config.parallel_config.world_size != 1
+                or vllm_config.parallel_config.data_parallel_size != 1
+                or self.batch_queue is None
+                or self.use_spec_decode
+                or self.is_pooling_model
+                or vllm_config.ec_transfer_config is not None
+                or vllm_config.model_config.is_encoder_decoder
+                or vllm_config.kv_transfer_config is None
+                or vllm_config.kv_transfer_config.kv_connector != "OffloadingConnector"
+            ):
+                raise ValueError(
+                    "Restore ready-first requires single-GPU UniProc, async batches, "
+                    "OffloadingConnector and non-speculative text generation"
+                )
+            self.restore_ready_first = ReadyRestoreDrain(ready_mode)
+
+        self.restore_readiness_trace: RestoreReadinessTrace | None = None
+        if os.environ.get("VLLM_EXPERIMENTAL_RESTORE_READINESS_TRACE") == "1":
+            if ready_mode != "observe":
+                raise ValueError("Readiness trace requires observe mode")
+            self.restore_readiness_trace = RestoreReadinessTrace()
+        if restore_host_trace.ENABLED and self.restore_readiness_trace is None:
+            raise ValueError("Host execution trace requires readiness trace")
 
         self.aborts_queue = queue.Queue[list[str]]()
 
@@ -386,6 +420,11 @@ class EngineCore:
         # or finished and not yet removed from the batch.
         if not self.scheduler.has_requests():
             return {}, False
+        # 一次 engine 迭代可以粗看成 4 步：
+        # 1. scheduler 决定下一步哪些请求、多少 token 要执行；
+        # 2. executor 拉起 worker 侧的 forward 路径；
+        # 3. 如果需要，再走一次基于缓存 logits 的 sample 阶段；
+        # 4. scheduler 把模型结果回写到请求状态里。
         scheduler_output = self.scheduler.schedule()
         future = self.model_executor.execute_model(scheduler_output, non_block=True)
         grammar_output = self.scheduler.get_grammar_bitmask(scheduler_output)
@@ -395,8 +434,12 @@ class EngineCore:
         ):
             model_output = future.result()
             if model_output is None:
+                # v1 的常见路径会把一次迭代拆成两段：
+                # `execute_model()` 负责 forward / logits 准备，
+                # `sample_tokens()` 负责选 token 并组装最终的 ModelRunnerOutput。
                 model_output = self.model_executor.sample_tokens(grammar_output)
 
+        stamp_output(model_output, "engine_output_consumed_s", engine_mode="step")
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
@@ -443,12 +486,37 @@ class EngineCore:
 
         model_executed = False
         deferred_scheduler_output = None
-        if self.scheduler.has_requests():
+        readiness = getattr(self, "restore_readiness_trace", None)
+        if not isinstance(readiness, RestoreReadinessTrace):
+            readiness = None
+        if readiness is not None:
+            readiness.begin(batch_queue)
+        ready_gate = getattr(self, "restore_ready_first", None)
+        drain_restore = isinstance(
+            ready_gate, ReadyRestoreDrain
+        ) and ready_gate.should_drain(batch_queue)
+        # Skip only new dispatch. Consume FIFO through the unchanged path below.
+        if not drain_restore and self.scheduler.has_requests():
+            if readiness is not None:
+                readiness.mark("before_schedule")
             scheduler_output = self.scheduler.schedule()
+            if readiness is not None:
+                readiness.mark("after_schedule")
             with self.log_error_detail(scheduler_output):
-                exec_future = self.model_executor.execute_model(
-                    scheduler_output, non_block=True
-                )
+                if readiness is not None:
+                    readiness.mark("before_execute")
+                if restore_host_trace.ENABLED:
+                    with restore_host_trace.execution_scope(scheduler_output) as host:
+                        exec_future = self.model_executor.execute_model(
+                            scheduler_output, non_block=True
+                        )
+                else:
+                    host = None
+                    exec_future = self.model_executor.execute_model(
+                        scheduler_output, non_block=True
+                    )
+                if readiness is not None:
+                    readiness.mark("after_execute", host_call=host)
             if self.is_ec_consumer:
                 model_executed = scheduler_output.total_num_scheduled_tokens > 0
 
@@ -459,12 +527,16 @@ class EngineCore:
                 if not scheduler_output.pending_structured_output_tokens:
                     # We aren't waiting for any tokens, get any grammar output
                     # and sample immediately.
+                    if readiness is not None:
+                        readiness.mark("before_sample")
                     grammar_output = self.scheduler.get_grammar_bitmask(
                         scheduler_output
                     )
                     future = self.model_executor.sample_tokens(
                         grammar_output, non_block=True
                     )
+                    if readiness is not None:
+                        readiness.mark("after_sample")
                 else:
                     # We need to defer sampling until we have processed the model output
                     # from the prior step.
@@ -473,6 +545,8 @@ class EngineCore:
             if not deferred_scheduler_output:
                 # Add this step's future to the queue.
                 batch_queue.appendleft((future, scheduler_output, exec_future))
+                if readiness is not None:
+                    readiness.enqueued(future)
                 if (
                     model_executed
                     and len(batch_queue) < self.batch_queue_size
@@ -490,6 +564,8 @@ class EngineCore:
 
         # Block until the next result is available.
         future, scheduler_output, exec_model_fut = batch_queue.pop()
+        if readiness is not None:
+            readiness.before_result(future)
         with (
             self.log_error_detail(scheduler_output),
             self.log_iteration_details(scheduler_output),
@@ -501,12 +577,21 @@ class EngineCore:
                 exec_model_fut.result()
                 raise RuntimeError("unexpected error")
 
+        stamp_output(
+            model_output, "engine_output_consumed_s", engine_mode="batch_queue"
+        )
+        if readiness is not None:
+            readiness.finish(future, model_output)
         # Before processing the model output, process any aborts that happened
         # during the model execution.
         self._process_aborts_queue()
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+
+        if drain_restore:
+            ready_gate.consumed()
+            self._restore_ready_consumed_this_step = True
 
         # NOTE(nick): We can either handle the deferred tasks here or save
         # in a field and do it immediately once step_with_batch_queue is
@@ -575,6 +660,33 @@ class EngineCore:
         return self.scheduler.reset_prefix_cache(
             reset_running_requests, reset_connector
         )
+
+    def get_value_policy_stats(self, reset: bool = False) -> dict[str, Any]:
+        kv_cache_manager = getattr(self.scheduler, "kv_cache_manager", None)
+        get_stats = getattr(kv_cache_manager, "get_value_policy_stats", None)
+        if get_stats is None:
+            raise RuntimeError(
+                "value policy stats are only available for schedulers with "
+                "a KVCacheManager"
+            )
+        stats = dict(get_stats(reset=reset))
+        connector = getattr(self.scheduler, "connector", None)
+        get_connector_stats = getattr(connector, "get_value_policy_stats", None)
+        if get_connector_stats is not None:
+            stats.update(get_connector_stats(reset=reset))
+        request_trace = getattr(self.scheduler, "request_path_trace", None)
+        if request_trace is not None:
+            stats.update(request_trace.snapshot(reset=reset))
+        ready_gate = getattr(self, "restore_ready_first", None)
+        if isinstance(ready_gate, ReadyRestoreDrain):
+            stats.update(ready_gate.snapshot(reset=reset))
+        else:
+            stats["restore_ready_first_mode"] = "off"
+        readiness = getattr(self, "restore_readiness_trace", None)
+        if isinstance(readiness, RestoreReadinessTrace):
+            stats.update(readiness.snapshot(reset=reset))
+        stats["restore_host_trace_enabled"] = restore_host_trace.ENABLED
+        return stats
 
     def reset_encoder_cache(self) -> None:
         """Reset the encoder cache to invalidate all cached encoder outputs.
@@ -1169,6 +1281,7 @@ class EngineCoreProc(EngineCore):
         """Called only when there are unfinished local requests."""
 
         # Step the engine core.
+        self._restore_ready_consumed_this_step = False
         outputs, model_executed = self.step_fn()
         # Put EngineCoreOutputs into the output queue.
         for output in outputs.items() if outputs else ():
@@ -1180,7 +1293,12 @@ class EngineCoreProc(EngineCore):
         # (e.g., WAITING_FOR_REMOTE_KVS), yield the GIL briefly to allow
         # background threads (like NIXL handshake) to make progress.
         # Without this, the tight polling loop can starve background threads.
-        if not model_executed and self.scheduler.has_unfinished_requests():
+        # A consumed ready restore result made progress; it is not an idle poll.
+        if (
+            not model_executed
+            and not self._restore_ready_consumed_this_step
+            and self.scheduler.has_unfinished_requests()
+        ):
             time.sleep(0.001)
 
         return model_executed

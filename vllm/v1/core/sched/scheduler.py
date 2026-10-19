@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
+import os
 import time
 from collections import defaultdict, deque
 from collections.abc import Iterable
@@ -50,9 +51,11 @@ from vllm.v1.core.sched.request_queue import (
     SchedulingPolicy,
     create_request_queue,
 )
+from vllm.v1.core.sched.request_trace import RequestPathTrace
 from vllm.v1.core.sched.utils import check_stop, remove_all
 from vllm.v1.engine import EngineCoreEventType, EngineCoreOutput, EngineCoreOutputs
 from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheConfig
+from vllm.v1.kv_offload.restore_trace import stamp_output
 from vllm.v1.metrics.perf import ModelMetrics, PerfStats
 from vllm.v1.metrics.stats import PrefixCacheStats, SchedulerStats
 from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
@@ -76,6 +79,11 @@ class Scheduler(SchedulerInterface):
         log_stats: bool = False,
     ) -> None:
         self.vllm_config = vllm_config
+        self.request_path_trace = (
+            RequestPathTrace()
+            if os.environ.get("VLLM_EXPERIMENTAL_REQUEST_PATH_TRACE") == "1"
+            else None
+        )
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
         self.lora_config = vllm_config.lora_config
@@ -743,6 +751,15 @@ class Scheduler(SchedulerInterface):
                 # if a load is needed. Note that
                 # This information is used to determine if a load is
                 # needed for this request.
+                if (
+                    self.request_path_trace is not None
+                    and request.num_computed_tokens == 0
+                ):
+                    self.request_path_trace.admission(
+                        request,
+                        num_new_local_computed_tokens,
+                        num_external_computed_tokens,
+                    )
                 if self.connector is not None:
                     self.connector.update_state_after_alloc(
                         request,
@@ -961,6 +978,10 @@ class Scheduler(SchedulerInterface):
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
         for req_id, num_scheduled_token in num_scheduled_tokens.items():
             request = self.requests[req_id]
+            if self.request_path_trace is not None:
+                self.request_path_trace.schedule(
+                    scheduler_output, request, num_scheduled_token
+                )
             request.num_computed_tokens += num_scheduled_token
             request.is_prefill_chunk = request.num_computed_tokens < (
                 request.num_tokens + request.num_output_placeholders
@@ -1277,10 +1298,16 @@ class Scheduler(SchedulerInterface):
         scheduler_output: SchedulerOutput,
         model_runner_output: ModelRunnerOutput,
     ) -> dict[int, EngineCoreOutputs]:
+        stamp_output(model_runner_output, "scheduler_update_entry_s")
         sampled_token_ids = model_runner_output.sampled_token_ids
         logprobs = model_runner_output.logprobs
         prompt_logprobs_dict = model_runner_output.prompt_logprobs_dict
         num_scheduled_tokens = scheduler_output.num_scheduled_tokens
+        trace_batch = (
+            self.request_path_trace.take_batch(scheduler_output)
+            if self.request_path_trace is not None
+            else {}
+        )
         pooler_outputs = model_runner_output.pooler_output
         num_nans_in_logits = model_runner_output.num_nans_in_logits
         kv_connector_output = model_runner_output.kv_connector_output
@@ -1331,6 +1358,10 @@ class Scheduler(SchedulerInterface):
                 continue
 
             req_index = model_runner_output.req_id_to_index[req_id]
+            if self.request_path_trace is not None:
+                self.request_path_trace.completed_step(
+                    req_id, trace_batch.get(req_id, 0)
+                )
             generated_token_ids = (
                 sampled_token_ids[req_index] if sampled_token_ids else []
             )
@@ -1373,6 +1404,8 @@ class Scheduler(SchedulerInterface):
                 new_token_ids, stopped = self._update_request_with_output(
                     request, new_token_ids
                 )
+                if new_token_ids and self.request_path_trace is not None:
+                    self.request_path_trace.first_output(request)
             elif request.pooling_params and pooler_output is not None:
                 # Pooling stops as soon as there is output.
                 request.status = RequestStatus.FINISHED_STOPPED
@@ -1721,6 +1754,8 @@ class Scheduler(SchedulerInterface):
                 request.streaming_queue = deque()
             self._enqueue_waiting_request(request)
             self.requests[request.request_id] = request
+            if self.request_path_trace is not None:
+                self.request_path_trace.enqueue(request)
             if self.log_stats:
                 request.record_event(EngineCoreEventType.QUEUED)
 
@@ -1792,6 +1827,8 @@ class Scheduler(SchedulerInterface):
     ) -> dict[str, Any] | None:
         assert request.is_finished()
 
+        if self.request_path_trace is not None:
+            self.request_path_trace.finish(request.request_id)
         connector_delay_free_blocks, kv_xfer_params = self._connector_finished(request)
         self.encoder_cache_manager.free(request)
         request_id = request.request_id

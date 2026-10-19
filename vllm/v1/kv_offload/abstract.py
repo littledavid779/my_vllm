@@ -30,8 +30,11 @@ The class provides the following primitives:
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Literal
 
 from vllm.v1.core.kv_cache_utils import BlockHash
+
+BlockResidency = Literal["missing", "pending", "ready", "unknown"]
 
 
 class LoadStoreSpec(ABC):
@@ -67,6 +70,16 @@ class OffloadingEvent:
 
 
 class OffloadingManager(ABC):
+    def get_block_residency(
+        self, block_hashes: Iterable[BlockHash]
+    ) -> list[BlockResidency]:
+        """Read-only snapshot, without lookup/touch or replacement-policy updates.
+
+        Pending means allocated but not loadable. Unknown is a conservative
+        fallback for managers that do not expose this optional diagnostic API.
+        """
+        return ["unknown" for _ in block_hashes]
+
     @abstractmethod
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
         """

@@ -5,6 +5,7 @@ from collections.abc import Iterable
 
 from vllm.v1.core.kv_cache_utils import BlockHash
 from vllm.v1.kv_offload.abstract import (
+    BlockResidency,
     LoadStoreSpec,
     OffloadingEvent,
     OffloadingManager,
@@ -62,6 +63,17 @@ class ARCOffloadingManager(OffloadingManager):
         self.b2: OrderedDict[BlockHash, None] = OrderedDict()
         self.events: list[OffloadingEvent] | None = [] if enable_events else None
         self.cache_capacity: int = self.backend.get_num_free_blocks()
+
+    def get_block_residency(
+        self, block_hashes: Iterable[BlockHash]
+    ) -> list[BlockResidency]:
+        states: list[BlockResidency] = []
+        for bh in block_hashes:
+            block = self.t1.get(bh) or self.t2.get(bh)
+            states.append(
+                "missing" if block is None else "ready" if block.is_ready else "pending"
+            )
+        return states
 
     def lookup(self, block_hashes: Iterable[BlockHash]) -> int | None:
         hit_count = 0

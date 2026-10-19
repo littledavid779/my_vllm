@@ -141,6 +141,7 @@ from vllm.v1.kv_cache_interface import (
     SlidingWindowSpec,
     UniformTypeKVCacheSpecs,
 )
+from vllm.v1.kv_offload import restore_host_trace
 from vllm.v1.outputs import (
     EMPTY_MODEL_RUNNER_OUTPUT,
     AsyncModelRunnerOutput,
@@ -3249,10 +3250,13 @@ class GPUModelRunner(
         # Ensure prior step has finished with reused CPU tensors.
         # This is required in the async scheduling case because
         # the CPU->GPU transfer happens async.
+        restore_host_trace.mark("input_prep_event_sync")
         self.prepare_inputs_event.synchronize()
+        restore_host_trace.mark("input_prep_event_sync_done")
         try:
             yield
         finally:
+            restore_host_trace.mark("input_prep_event_record")
             self.prepare_inputs_event.record()
 
     def _model_forward(
@@ -3539,6 +3543,7 @@ class GPUModelRunner(
         scheduler_output: "SchedulerOutput",
         intermediate_tensors: IntermediateTensors | None = None,
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | IntermediateTensors | None:
+        restore_host_trace.mark("runner_setup")
         if self.execute_model_state is not None:
             raise RuntimeError(
                 "State error: sample_tokens() must be called "
@@ -3580,7 +3585,9 @@ class GPUModelRunner(
             self.synchronize_input_prep(),
         ):
             # Update persistent batch states.
+            restore_host_trace.mark("update_states")
             self._update_states(scheduler_output)
+            restore_host_trace.mark("batch_setup")
 
             if has_ec_transfer() and not get_ec_transfer().is_consumer:
                 with self.maybe_get_ec_connector_output(
@@ -3622,11 +3629,13 @@ class GPUModelRunner(
             max_num_scheduled_tokens = int(num_scheduled_tokens_np.max())
             num_tokens_unpadded = scheduler_output.total_num_scheduled_tokens
 
+            restore_host_trace.mark("prepare_inputs")
             logits_indices, spec_decode_metadata = self._prepare_inputs(
                 scheduler_output,
                 num_scheduled_tokens_np,
             )
 
+            restore_host_trace.mark("execution_selection")
             cascade_attn_prefix_lens = None
             # Disable cascade attention when using microbatching (DBO)
             if self.cascade_attn_enabled and not self.parallel_config.use_ubatching:
@@ -3708,6 +3717,7 @@ class GPUModelRunner(
             use_spec_decode = len(scheduler_output.scheduled_spec_decode_tokens) > 0
             ubatch_slices_attn = ubatch_slices_padded if pad_attn else ubatch_slices
 
+            restore_host_trace.mark("slot_mappings")
             slot_mappings_by_group, slot_mappings = self._get_slot_mappings(
                 num_tokens_padded=num_tokens_padded
                 if pad_attn or has_separate_kv_update
@@ -3719,6 +3729,7 @@ class GPUModelRunner(
                 ubatch_slices=ubatch_slices_padded,
             )
 
+            restore_host_trace.mark("attention_metadata")
             attn_metadata, spec_decode_common_attn_metadata = (
                 self._build_attention_metadata(
                     num_tokens=num_tokens_unpadded,
@@ -3735,6 +3746,7 @@ class GPUModelRunner(
                 )
             )
 
+            restore_host_trace.mark("preprocess")
             (
                 input_ids,
                 inputs_embeds,
@@ -3746,6 +3758,7 @@ class GPUModelRunner(
                 scheduler_output, num_tokens_padded, intermediate_tensors
             )
 
+        restore_host_trace.mark("forward_context_setup")
         # Set cudagraph mode to none if calc_kv_scales is true.
         # KV scales calculation involves dynamic operations that are incompatible
         # with CUDA graph capture.
@@ -3784,6 +3797,7 @@ class GPUModelRunner(
                 defer_finalize=defer_kv_connector_finalize,
             ) as kv_connector_output,
         ):
+            restore_host_trace.mark("model_forward")
             model_output = self._model_forward(
                 input_ids=input_ids,
                 positions=positions,
@@ -3792,6 +3806,7 @@ class GPUModelRunner(
                 **model_kwargs,
             )
 
+        restore_host_trace.mark("postprocess_logits")
         with record_function_or_nullcontext("gpu_model_runner: postprocess"):
             if self.use_aux_hidden_state_outputs:
                 # True when EAGLE 3 is used.
@@ -3851,6 +3866,7 @@ class GPUModelRunner(
                 assert broadcasted is not None
                 logits = broadcasted["logits"]
 
+        restore_host_trace.mark("runner_finalize")
         self.execute_model_state = ExecuteModelState(
             scheduler_output,
             logits,

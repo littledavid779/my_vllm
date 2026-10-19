@@ -23,6 +23,7 @@ from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.logger import init_logger
 from vllm.v1.attention.backend import AttentionBackend
 from vllm.v1.kv_cache_interface import AttentionSpec, KVCacheConfig
+from vllm.v1.kv_offload import restore_host_trace
 from vllm.v1.outputs import (
     EMPTY_MODEL_RUNNER_OUTPUT,
     KVConnectorOutput,
@@ -109,16 +110,21 @@ class KVConnectorModelRunnerMixin:
         # These transfers are designed to be async and the requests
         # involved may be disjoint from the running requests.
         # Do this here to save a collective_rpc.
+        restore_host_trace.mark("kv_start_load")
         kv_connector.start_load_kv(get_forward_context())
+        restore_host_trace.mark("kv_context_body")
         try:
             yield output
         finally:
+            restore_host_trace.mark("kv_wait_for_save")
             if wait_for_save and not defer_finalize:
                 kv_connector.wait_for_save()
 
+            restore_host_trace.mark("kv_get_finished")
             output.finished_sending, output.finished_recving = (
                 kv_connector.get_finished(scheduler_output.finished_req_ids)
             )
+            restore_host_trace.mark("kv_stats_and_metadata")
             output.invalid_block_ids = kv_connector.get_block_ids_with_load_errors()
 
             output.kv_connector_stats = kv_connector.get_kv_connector_stats()
@@ -127,6 +133,7 @@ class KVConnectorModelRunnerMixin:
 
             if not defer_finalize:
                 kv_connector.clear_connector_metadata()
+            restore_host_trace.mark("kv_context_exit")
 
     @staticmethod
     def use_uniform_kv_cache(

@@ -44,6 +44,7 @@ class CPUOffloadingSpec(OffloadingSpec):
         )
 
         kv_bytes_per_offloaded_block = kv_bytes_per_block * self.block_size_factor
+        self.kv_bytes_per_offloaded_block = kv_bytes_per_offloaded_block
         self.num_blocks = (
             int(cpu_bytes_to_use) // kv_bytes_per_offloaded_block
             if kv_bytes_per_offloaded_block > 0
@@ -87,17 +88,26 @@ class CPUOffloadingSpec(OffloadingSpec):
                 )
 
             # store_threshold: how many times a block must appear in lookup()
-            # before it is eligible for CPU offloading.  Values < 2 disable
-            # filtering (a threshold of 1 equals no filter; 0 is the default).
-            store_threshold = int(self.extra_config.get("store_threshold", 0))
-            if store_threshold >= 2:
+            # before it is eligible for CPU offloading. Values <= 1 preserve
+            # all-block offloading while still reporting admission stats when
+            # explicitly configured.
+            track_lifecycle_stats = bool(
+                self.extra_config.get("track_lifecycle_stats", False)
+            )
+            if "store_threshold" in self.extra_config or track_lifecycle_stats:
+                store_threshold = int(self.extra_config.get("store_threshold", 0))
                 max_tracker_size = int(
                     self.extra_config.get("max_tracker_size", 64_000)
+                )
+                count_store_attempts = bool(
+                    self.extra_config.get("count_store_attempts", False)
                 )
                 self._manager = FilterReusedOffloadingManager(
                     backing=self._manager,
                     store_threshold=store_threshold,
                     max_tracker_size=max_tracker_size,
+                    count_store_attempts=count_store_attempts,
+                    track_lifecycle_stats=track_lifecycle_stats,
                 )
         return self._manager
 

@@ -1909,6 +1909,97 @@ def test_value_eviction_reorder_skips_without_cached_candidates(monkeypatch):
     assert stats["reorder_count"] == 0
 
 
+def test_value_eviction_reorder_hit_guard(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "prefix_only")
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_USAGE", "0")
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_CANDIDATE_WINDOW", "2")
+    monkeypatch.setenv(
+        "VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_REORDER_HIT_BLOCKS", "2"
+    )
+    pool = BlockPool(num_gpu_blocks=5, enable_caching=True, hash_block_size=16)
+
+    first_block = pool.free_block_queue.get_first_n_free_blocks(1)[0]
+    first_hash = make_block_hash_with_group_id(BlockHash(b"guarded"), 0)
+    first_block.block_hash = first_hash
+    pool.cached_block_hash_to_block.insert(first_hash, first_block)
+
+    pool.set_value_policy_allocation_context(num_local_hit_tokens=16)
+    pool._maybe_reorder_free_queue_for_value_policy(1)
+
+    stats = pool.get_value_policy_stats()
+    assert stats["min_reorder_hit_blocks"] == 2
+    assert stats["reorder_skipped_low_hit_count"] == 1
+    assert stats["reorder_attempt_count"] == 0
+
+    pool.set_value_policy_allocation_context(num_local_hit_tokens=32)
+    pool._maybe_reorder_free_queue_for_value_policy(1)
+
+    stats = pool.get_value_policy_stats()
+    assert stats["reorder_skipped_low_hit_count"] == 1
+    assert stats["reorder_attempt_count"] == 1
+
+
+def test_value_eviction_reorder_score_margin_guard(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "prefix_only")
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_USAGE", "0")
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_CANDIDATE_WINDOW", "2")
+    monkeypatch.setenv(
+        "VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_REORDER_SCORE_MARGIN", "1.0"
+    )
+    pool = BlockPool(num_gpu_blocks=5, enable_caching=True, hash_block_size=16)
+
+    high_value_block, low_value_block = pool.free_block_queue.get_first_n_free_blocks(2)
+    high_value_hash = make_block_hash_with_group_id(BlockHash(b"high-value"), 0)
+    low_value_hash = make_block_hash_with_group_id(BlockHash(b"low-value"), 0)
+    for block, block_hash in (
+        (high_value_block, high_value_hash),
+        (low_value_block, low_value_hash),
+    ):
+        block.block_hash = block_hash
+        pool.cached_block_hash_to_block.insert(block_hash, block)
+
+    pool._record_block_store(
+        high_value_hash, "conv-a", prefix_index=0, prefix_chain_len=1
+    )
+    pool._record_block_store(
+        high_value_hash, "conv-b", prefix_index=0, prefix_chain_len=1
+    )
+    pool._record_block_store(
+        low_value_hash, "conv-a", prefix_index=0, prefix_chain_len=1
+    )
+
+    assert pool._block_value_score(high_value_block, 0.0) > pool._block_value_score(
+        low_value_block, 0.0
+    )
+
+    pool._maybe_reorder_free_queue_for_value_policy(1)
+
+    assert pool.free_block_queue.get_first_n_free_blocks(2) == [
+        high_value_block,
+        low_value_block,
+    ]
+    stats = pool.get_value_policy_stats()
+    assert stats["min_reorder_score_margin"] == 1.0
+    assert stats["reorder_attempt_count"] == 1
+    assert stats["reorder_skipped_low_margin_count"] == 1
+    assert stats["reorder_count"] == 0
+
+
+def test_allocate_slots_clears_value_policy_context(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "prefix_only")
+    manager = KVCacheManager(
+        make_kv_cache_config(block_size=16, num_blocks=6),
+        max_model_len=8192,
+        enable_caching=True,
+        hash_block_size=16,
+    )
+    req = make_request("0", list(range(16)), 16, sha256)
+
+    manager.allocate_slots(req, 16)
+
+    assert manager.block_pool._value_allocation_hit_blocks is None
+
+
 def test_chain_hybrid_prefers_early_prefix_blocks(monkeypatch):
     monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "chain_hybrid")
     monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_USAGE", "0")
@@ -1946,6 +2037,80 @@ def test_chain_hybrid_prefers_early_prefix_blocks(monkeypatch):
     ]
 
 
+def test_shared_chain_hybrid_only_boosts_shared_chains(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "shared_chain_hybrid")
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_CHAIN_WEIGHT", "1")
+    pool = BlockPool(num_gpu_blocks=6, enable_caching=True, hash_block_size=16)
+
+    private_early, private_late, shared_early, shared_late = (
+        pool.free_block_queue.get_first_n_free_blocks(4)
+    )
+    private_early_hash = make_block_hash_with_group_id(
+        BlockHash(b"private-early"), 0
+    )
+    private_late_hash = make_block_hash_with_group_id(
+        BlockHash(b"private-late"), 0
+    )
+    shared_early_hash = make_block_hash_with_group_id(
+        BlockHash(b"shared-early"), 0
+    )
+    shared_late_hash = make_block_hash_with_group_id(
+        BlockHash(b"shared-late"), 0
+    )
+
+    private_early.block_hash = private_early_hash
+    private_late.block_hash = private_late_hash
+    shared_early.block_hash = shared_early_hash
+    shared_late.block_hash = shared_late_hash
+
+    pool._record_block_store(
+        private_early_hash, "conv-a", prefix_index=0, prefix_chain_len=10
+    )
+    pool._record_block_store(
+        private_late_hash, "conv-a", prefix_index=8, prefix_chain_len=10
+    )
+    pool._record_block_store(
+        shared_early_hash, "conv-a", prefix_index=0, prefix_chain_len=10
+    )
+    pool._record_block_store(
+        shared_early_hash, "conv-b", prefix_index=0, prefix_chain_len=10
+    )
+    pool._record_block_store(
+        shared_late_hash, "conv-a", prefix_index=8, prefix_chain_len=10
+    )
+    pool._record_block_store(
+        shared_late_hash, "conv-b", prefix_index=8, prefix_chain_len=10
+    )
+
+    assert pool._block_value_score(private_early, 0.0) == pool._block_value_score(
+        private_late, 0.0
+    )
+    assert pool._block_value_score(shared_early, 0.0) > pool._block_value_score(
+        shared_late, 0.0
+    )
+
+
+def test_value_policy_updates_existing_cached_block_chain_len(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "chain_hybrid")
+    pool = BlockPool(num_gpu_blocks=4, enable_caching=True, hash_block_size=16)
+
+    block_hash = make_block_hash_with_group_id(BlockHash(b"growing-chain"), 0)
+    pool._record_block_store(
+        block_hash, "conv-a", prefix_index=0, prefix_chain_len=1
+    )
+
+    stats = pool._block_value_stats[block_hash]
+    assert stats.store_count == 1
+    assert pool._block_chain_downstream_blocks(stats) == 0
+
+    pool._record_block_chain_observation(
+        block_hash, "conv-a", prefix_chain_len=4
+    )
+
+    assert stats.store_count == 1
+    assert pool._block_chain_downstream_blocks(stats) == 3
+
+
 def test_value_policy_stats_records_prefix_cache_lookup():
     pool = BlockPool(num_gpu_blocks=4, enable_caching=True, hash_block_size=16)
 
@@ -1962,6 +2127,34 @@ def test_value_policy_stats_records_prefix_cache_lookup():
     stats = pool.get_value_policy_stats()
     assert stats["prefix_cache_query_count"] == 0
     assert stats["effective_prefix_hit_blocks_sum"] == 0
+
+
+def test_value_policy_stats_records_lru_cached_evictions(monkeypatch):
+    monkeypatch.setenv("VLLM_EXPERIMENTAL_GPU_EVICTION_POLICY", "lru")
+    pool = BlockPool(num_gpu_blocks=4, enable_caching=True, hash_block_size=16)
+
+    block = pool.free_block_queue.get_first_n_free_blocks(1)[0]
+    block_hash = make_block_hash_with_group_id(BlockHash(b"lru-cached"), 0)
+    block.block_hash = block_hash
+    pool.cached_block_hash_to_block.insert(block_hash, block)
+
+    pool._record_block_store(
+        block_hash, "conv-a", prefix_index=1, prefix_chain_len=4
+    )
+    block_stats = pool._block_value_stats[block_hash]
+    block_stats.apc_hit_count = 1
+
+    assert pool._maybe_evict_cached_block(block)
+
+    stats = pool.get_value_policy_stats()
+    assert stats["policy"] == "lru"
+    assert stats["evicted_blocks"] == 1
+    assert stats["evicted_owner_count_sum"] == 1
+    assert stats["evicted_apc_hit_count_sum"] == 1
+    assert stats["evicted_prefix_index_sum"] == 1
+    assert stats["evicted_prefix_index_count"] == 1
+    assert stats["evicted_chain_downstream_blocks_sum"] == 2
+    assert stats["evicted_value_score_sum"] == 0.0
 
 
 def test_value_policy_stats_records_evicted_block_metadata(monkeypatch):

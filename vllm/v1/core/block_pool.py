@@ -60,6 +60,8 @@ class BlockValuePolicyStats:
     reorder_time_s: float = 0.0
     reorder_scored_blocks: int = 0
     reorder_skipped_low_usage_count: int = 0
+    reorder_skipped_low_hit_count: int = 0
+    reorder_skipped_low_margin_count: int = 0
     reorder_skipped_no_cached_evict_count: int = 0
     evicted_blocks: int = 0
     evicted_value_score_sum: float = 0.0
@@ -81,6 +83,7 @@ _VALUE_EVICTION_POLICIES = {
     "hotness_only",
     "hybrid",
     "chain_hybrid",
+    "shared_chain_hybrid",
 }
 
 
@@ -291,6 +294,23 @@ class BlockPool:
                 )
             ),
         )
+        self._value_min_reorder_hit_blocks = max(
+            0,
+            int(
+                self._read_float_env(
+                    "VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_REORDER_HIT_BLOCKS",
+                    0.0,
+                )
+            ),
+        )
+        self._value_min_reorder_score_margin = max(
+            0.0,
+            self._read_float_env(
+                "VLLM_EXPERIMENTAL_GPU_EVICTION_MIN_REORDER_SCORE_MARGIN",
+                0.0,
+            ),
+        )
+        self._value_allocation_hit_blocks: int | None = None
         self._value_request_owner_map = self._read_owner_map_env()
         self._value_policy_stats = BlockValuePolicyStats()
         if self._value_eviction_enabled:
@@ -298,7 +318,8 @@ class BlockPool:
                 "Experimental GPU value eviction enabled: "
                 "policy=%s min_usage=%.2f share_weight=%.2f "
                 "hotness_weight=%.2f restore_weight=%.2f "
-                "chain_weight=%.2f candidate_window=%d",
+                "chain_weight=%.2f candidate_window=%d "
+                "min_reorder_hit_blocks=%d min_reorder_score_margin=%.2f",
                 self.value_eviction_policy,
                 self._value_min_usage,
                 self._value_share_weight,
@@ -306,6 +327,8 @@ class BlockPool:
                 self._value_restore_weight,
                 self._value_chain_weight,
                 self._value_candidate_window,
+                self._value_min_reorder_hit_blocks,
+                self._value_min_reorder_score_margin,
             )
 
         self.metrics_collector = metrics_collector
@@ -388,6 +411,22 @@ class BlockPool:
             stats.max_prefix_chain_len, prefix_chain_len
         )
 
+    def _record_block_chain_observation(
+        self,
+        block_hash: BlockHashWithGroupId | None,
+        request_id: str | None,
+        prefix_chain_len: int,
+    ) -> None:
+        if block_hash is None:
+            return
+        stats = self._get_block_value_stats(block_hash)
+        owner_id = self._value_owner_id(request_id)
+        if owner_id:
+            stats.request_ids.add(owner_id)
+        stats.max_prefix_chain_len = max(
+            stats.max_prefix_chain_len, prefix_chain_len
+        )
+
     def _record_block_access(
         self, block_hash: BlockHashWithGroupId | None, request_id: str | None
     ) -> None:
@@ -450,6 +489,11 @@ class BlockPool:
         else:
             hotness_score = 0.0
         chain_score = self._block_chain_impact_score(stats)
+        if (
+            self.value_eviction_policy == "shared_chain_hybrid"
+            and len(stats.request_ids) <= 1
+        ):
+            chain_score = 0.0
         restore_score = math.log1p(stats.restore_count) + math.log1p(
             stats.restore_bytes
         )
@@ -465,7 +509,9 @@ class BlockPool:
         restore_boost = 1.0 + self._value_restore_weight * math.log1p(
             restore_score
         )
-        if self.value_eviction_policy == "chain_hybrid":
+        if self.value_eviction_policy in (
+            "chain_hybrid", "shared_chain_hybrid"
+        ):
             chain_boost = 1.0 + self._value_chain_weight * chain_score
             return (
                 self._value_share_weight
@@ -498,6 +544,26 @@ class BlockPool:
             >= self._value_min_usage
         )
 
+    def set_value_policy_allocation_context(
+        self, num_local_hit_tokens: int
+    ) -> None:
+        self._value_allocation_hit_blocks = (
+            max(num_local_hit_tokens, 0) // self.hash_block_size
+        )
+
+    def clear_value_policy_allocation_context(self) -> None:
+        self._value_allocation_hit_blocks = None
+
+    def _should_reorder_for_value_policy_hit_guard(self) -> bool:
+        if self._value_min_reorder_hit_blocks <= 0:
+            return True
+        if self._value_allocation_hit_blocks is None:
+            return True
+        return (
+            self._value_allocation_hit_blocks
+            >= self._value_min_reorder_hit_blocks
+        )
+
     def _is_cached_eviction_candidate(self, block: KVCacheBlock) -> bool:
         block_hash = block.block_hash
         return (
@@ -521,6 +587,9 @@ class BlockPool:
         ):
             stats.reorder_skipped_low_usage_count += 1
             return
+        if not self._should_reorder_for_value_policy_hit_guard():
+            stats.reorder_skipped_low_hit_count += 1
+            return
 
         stats.reorder_attempt_count += 1
         start_s = time.perf_counter()
@@ -539,13 +608,26 @@ class BlockPool:
             return
 
         now_s = time.monotonic()
-        scored_blocks = list(enumerate(free_blocks))
-        scored_blocks.sort(
-            key=lambda item: (self._block_value_score(item[1], now_s), item[0])
-        )
-        ordered_blocks = [block for _, block in scored_blocks]
+        scored_blocks = [
+            (idx, block, self._block_value_score(block, now_s))
+            for idx, block in enumerate(free_blocks)
+        ]
         stats.reorder_scored_blocks += len(scored_blocks)
         stats.reorder_time_s += time.perf_counter() - start_s
+        eviction_candidate_scores = [
+            score
+            for _, block, score in scored_blocks[:eviction_candidate_count]
+            if self._is_cached_eviction_candidate(block)
+        ]
+        if eviction_candidate_scores and (
+            max(score for _, _, score in scored_blocks)
+            - min(eviction_candidate_scores)
+            < self._value_min_reorder_score_margin
+        ):
+            stats.reorder_skipped_low_margin_count += 1
+            return
+        scored_blocks.sort(key=lambda item: (item[2], item[0]))
+        ordered_blocks = [block for _, block, _ in scored_blocks]
         if ordered_blocks != free_blocks:
             self.free_block_queue.reorder_prefix(ordered_blocks)
             stats.reorder_count += 1
@@ -553,15 +635,14 @@ class BlockPool:
     def _record_cached_block_eviction(
         self, block: KVCacheBlock, block_hash: BlockHashWithGroupId
     ) -> None:
-        if not self._value_eviction_enabled:
-            return
         stats = self._block_value_stats.get(block_hash)
         policy_stats = self._value_policy_stats
         now_s = time.monotonic()
         policy_stats.evicted_blocks += 1
-        policy_stats.evicted_value_score_sum += self._block_value_score(
-            block, now_s
-        )
+        if self._value_eviction_enabled:
+            policy_stats.evicted_value_score_sum += self._block_value_score(
+                block, now_s
+            )
         if stats is not None:
             policy_stats.evicted_owner_count_sum += len(stats.request_ids)
             policy_stats.evicted_access_count_sum += stats.access_count
@@ -671,6 +752,14 @@ class BlockPool:
         new_hashes: list[ExternalBlockHash] | None = (
             [] if self.enable_kv_cache_events else None
         )
+        for blk in blocks[:num_cached_blocks]:
+            if blk.is_null:
+                continue
+            self._record_block_chain_observation(
+                blk.block_hash,
+                request.request_id,
+                prefix_chain_len=num_full_blocks,
+            )
         for i, blk in enumerate(new_full_blocks):
             # Some blocks may be null blocks when enabling sparse attention like
             # sliding window attention, or Mamba models with prefix-caching in
@@ -929,6 +1018,8 @@ class BlockPool:
             "min_usage": self._value_min_usage,
             "candidate_window": self._value_candidate_window,
             "chain_weight": self._value_chain_weight,
+            "min_reorder_hit_blocks": self._value_min_reorder_hit_blocks,
+            "min_reorder_score_margin": self._value_min_reorder_score_margin,
             "prefix_cache_query_count": stats.prefix_cache_query_count,
             "prefix_cache_zero_hit_count": stats.prefix_cache_zero_hit_count,
             "effective_prefix_hit_blocks_sum": (
@@ -943,6 +1034,12 @@ class BlockPool:
             "reorder_scored_blocks": stats.reorder_scored_blocks,
             "reorder_skipped_low_usage_count": (
                 stats.reorder_skipped_low_usage_count
+            ),
+            "reorder_skipped_low_hit_count": (
+                stats.reorder_skipped_low_hit_count
+            ),
+            "reorder_skipped_low_margin_count": (
+                stats.reorder_skipped_low_margin_count
             ),
             "reorder_skipped_no_cached_evict_count": (
                 stats.reorder_skipped_no_cached_evict_count
