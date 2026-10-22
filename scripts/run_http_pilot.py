@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import signal
 import statistics
 import subprocess
@@ -92,12 +93,19 @@ async def measure(args, data, root, arm, server, alias):
         # Use disjoint synthetic warmup chunks: never warm a measured edit.
         await request(client, alias, data["warmup_seed_ids"], max_tokens=1)
         await request(client, alias, data["warmup_edit_ids"], max_tokens=1)
-        for session in data["sessions"]:
+        for session_index, session in enumerate(data["sessions"]):
+            if session_index % 10 == 0:
+                state = gpu_state(args.gpu)
+                with (root / "gpu_samples.jsonl").open("a") as stream:
+                    stream.write(json.dumps({"arm": arm, **state}) + "\n")
+                for pid in state["pids"]:
+                    if os.getpgid(pid) != server.pid:
+                        raise RuntimeError("another process started using the test GPU")
             await request(client, alias, session["versions"][0]["token_ids"])
             for version, item in enumerate(session["versions"][1:], 1):
                 pipeline_started = time.perf_counter()
                 preparation = None
-                if arm == "cacheblend15":
+                if arm.startswith("cacheblend"):
                     preparation = await request(
                         client, alias, item["new_chunk_ids"], max_tokens=1
                     )
@@ -114,6 +122,10 @@ async def measure(args, data, root, arm, server, alias):
                     arm=arm,
                     session_id=session["session_id"],
                     family=session["family"],
+                    source_id=session.get("source_id", session["session_id"]),
+                    placement=session.get("placement", "pilot"),
+                    prompt_tokens=session["prompt_tokens"],
+                    suffix_tokens=session.get("suffix_tokens"),
                     version=version,
                     suffix_start=(
                         session["editable_token_span"][1]
@@ -144,13 +156,13 @@ async def measure(args, data, root, arm, server, alias):
     return rows
 
 
-def report(root, rows):
+def report(root, rows, arms=ARMS):
     references = {
         (r["session_id"], r["version"]): r for r in rows if r["arm"] == "full"
     }
     summary = []
     for family in ("all", *sorted({r["family"] for r in rows})):
-        for arm in ARMS:
+        for arm in arms:
             group = [
                 r
                 for r in rows
@@ -181,7 +193,7 @@ def report(root, rows):
     lines = [
         "# CacheBlend 官方实现：HTTP 小规模管线验证",
         "",
-        "公开来源中间编辑衍生负载；8 条题链、各 4 次编辑、单次测量。"
+        "公开来源中间编辑衍生负载；题链及编辑数量见输入 manifest。"
         "加了官方分块分隔符，不能与之前原型的耗时直接比较；不是论文原始负载复现。",
         "各 arm 独立启动服务并播种原始上下文，随后按版本连续编辑；"
         "CacheBlend 使用上游实际缓存管理行为，不另加私有缓存链策略。",
@@ -204,7 +216,7 @@ def report(root, rows):
         )
     lines += [
         "",
-        "每类仅两条独立题链，不代表总体精度。完整重算质量低的类别"
+        "独立题链数量有限，不代表总体精度。完整重算质量低的类别"
         "保留结果，但不能证明精度保持。尚未扫描预算或验证 sparse 后端，"
         "不能据此声称我们的策略优于 CacheBlend。",
         "",
@@ -217,17 +229,37 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--port", type=int, default=18265)
     parser.add_argument("--gpu", type=int, default=1)
+    parser.add_argument("--input", type=Path, default=PROJECT / "data/pilot.json")
+    parser.add_argument("--lock", type=Path, default=PROJECT / "data.lock.json")
+    parser.add_argument("--arms", nargs="+", default=list(ARMS))
+    parser.add_argument("--max-model-len", type=int, default=4096)
     args = parser.parse_args()
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
         raise RuntimeError("use dedicated venv")
-    data_path = PROJECT / "data/pilot.json"
-    locked = json.loads((PROJECT / "data.lock.json").read_text())
+    data_path = args.input.resolve()
+    locked = json.loads(args.lock.read_text())
     digest = hashlib.sha256(data_path.read_bytes()).hexdigest()
     if digest != locked["input_sha256"]:
         raise ValueError("pilot input changed")
     data = json.loads(data_path.read_text())
+    if "full" not in args.arms or "prefix" not in args.arms:
+        raise ValueError("full and prefix controls are required")
+    for arm in args.arms:
+        if arm not in ("full", "prefix"):
+            if not re.fullmatch(r"cacheblend\d+", arm):
+                raise ValueError(f"unsupported arm: {arm}")
+            if not 0 < int(arm.removeprefix("cacheblend")) <= 100:
+                raise ValueError("invalid blend ratio")
     root = args.output.resolve()
     root.mkdir(parents=True, exist_ok=False)
+    shutil.copyfile(data_path, root / "input.json")
+    shutil.copyfile(args.lock, root / "input.lock.json")
+    snapshot = root / "source_snapshot"
+    snapshot.mkdir()
+    for path in (PROJECT / "scripts").glob("*.py"):
+        shutil.copyfile(path, snapshot / path.name)
+    for name in ("sources.lock.json", "requirements.lock"):
+        shutil.copyfile(PROJECT / name, snapshot / name)
     for script in ("verify_sources.py", "verify_runtime.py"):
         subprocess.run([sys.executable, str(PROJECT / "scripts" / script)], check=True)
     manifest = {
@@ -237,9 +269,19 @@ def main():
         "config": {
             "gpu": args.gpu,
             "port": args.port,
-            "ratio": 0.15,
+            "ratios": {
+                arm: int(arm.removeprefix("cacheblend")) / 100
+                for arm in args.arms
+                if arm.startswith("cacheblend")
+            },
             "check_layers": [1],
             "sparse": False,
+            "arms": args.arms,
+            "max_model_len": args.max_model_len,
+        },
+        "source_snapshot_sha256": {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in snapshot.iterdir()
         },
     }
     env = os.environ.copy()
@@ -265,7 +307,7 @@ def main():
     )
     rows = []
     try:
-        for arm in ARMS:
+        for arm in args.arms:
             before = gpu_state(args.gpu)
             if before["pids"] or before["memory_mib"] > 100:
                 raise RuntimeError("GPU is busy")
@@ -282,9 +324,9 @@ def main():
                 "--port",
                 str(args.port),
                 "--max-model-len",
-                "4096",
+                str(args.max_model_len),
                 "--max-num-batched-tokens",
-                "4096",
+                str(args.max_model_len),
                 "--max-num-seqs",
                 "1",
                 "--gpu-memory-utilization",
@@ -302,14 +344,18 @@ def main():
                 if arm == "prefix"
                 else "--no-enable-prefix-caching"
             ]
-            if arm == "cacheblend15":
+            if arm.startswith("cacheblend"):
                 mode_env.update(
                     {
                         "LMCACHE_ENABLE_BLENDING": "True",
-                        "LMCACHE_BLEND_SPECIAL_STR": "# #",
+                        "LMCACHE_BLEND_SPECIAL_STR": data["pilot_provenance"].get(
+                            "separator_text", "# #"
+                        ),
                         "LMCACHE_USE_LAYERWISE": "True",
                         "LMCACHE_BLEND_CHECK_LAYERS": "1",
-                        "LMCACHE_BLEND_RECOMPUTE_RATIOS": "0.15",
+                        "LMCACHE_BLEND_RECOMPUTE_RATIOS": str(
+                            int(arm.removeprefix("cacheblend")) / 100
+                        ),
                         "LMCACHE_CHUNK_SIZE": "256",
                         "LMCACHE_LOCAL_CPU": "True",
                         "LMCACHE_MAX_LOCAL_CPU_SIZE": "5",
@@ -354,16 +400,23 @@ def main():
                         if not gpu_state(args.gpu)["pids"]:
                             break
                         time.sleep(0.5)
-        text = (root / "cacheblend15.log").read_text()
-        hits = {
-            rid: int(count)
-            for rid, count in re.findall(
-                r"Reqid: (\S+), Total tokens \d+, LMCache hit tokens: (\d+)", text
-            )
-        }
+        hits = {}
+        for arm in args.arms:
+            if arm.startswith("cacheblend"):
+                text = (root / f"{arm}.log").read_text()
+                hits.update(
+                    {
+                        rid: int(count)
+                        for rid, count in re.findall(
+                            r"Reqid: (\S+), Total tokens \d+, "
+                            r"LMCache hit tokens: (\d+)",
+                            text,
+                        )
+                    }
+                )
         verified = 0
         for row in rows:
-            if row["arm"] == "cacheblend15":
+            if row["arm"].startswith("cacheblend"):
                 count = hits.get(row["request_id"] + "-0", -1)
                 row["lmcache_hit_tokens"] = count
                 if count > row["suffix_start"]:
@@ -371,7 +424,7 @@ def main():
                 else:
                     raise RuntimeError("CacheBlend did not reach the unchanged C chunk")
         (root / "results.json").write_text(json.dumps(rows, indent=2))
-        report(root, rows)
+        report(root, rows, args.arms)
         manifest.update(
             status="completed",
             events=len(rows),

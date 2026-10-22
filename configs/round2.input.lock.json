@@ -1,0 +1,28 @@
+{
+  "input_sha256": "14548020374fac13a83e32b7ac435274f6b5a60f57e50975ccb04375a3f8d4df",
+  "protocol": {
+    "independent_sources": 108,
+    "edits": 3,
+    "selection": "first eligible sources after indices 0,1; earliest effective edit",
+    "quality_filtering": false,
+    "prompt_source_sha256": "be08d7e466170177e38fddb997e3dd9ffb281d5a830edd240933e069a9c5c2ee",
+    "early8k": "facts moved before 7600 background tokens; facts removed",
+    "caveat": "Derived task; not official BABILong benchmark scores."
+  },
+  "source_audit": {
+    "qa9": {
+      "source_labels_agreed": 100,
+      "sha256": "476632adc3ab469350fd21fcede0a50307d9983e42c6e76d44c3a0da062d1013"
+    },
+    "qa2": {
+      "source_labels_agreed": 100,
+      "sha256": "420fc8e4a52d39b7bfeb4e44d7782c5f0ae7ba10144c00485f0bb332f4ceaced"
+    },
+    "qa3": {
+      "source_labels_agreed": 100,
+      "sha256": "6cca199e011107f26b31a6f4af9dfab1b3b81c1ff8da4d4271e3a9c67c7d8fad"
+    }
+  },
+  "builder_sha256": "2ea7015b7b264c805e735997a34cbc7e11f80c809c8d2eb44829bfccfcbd7cee",
+  "oracle_sha256": "099839923c36827912fa1e72b7c10135decd51e9e9c145643a708bbca50bc193"
+}
