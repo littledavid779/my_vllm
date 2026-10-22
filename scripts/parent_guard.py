@@ -7,21 +7,20 @@ import subprocess
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
-PARENT = PROJECT.parents[1]
 
 
-def snapshot():
+def snapshot(parent):
     def git(*args):
         return subprocess.check_output(
-            ["git", "-c", f"safe.directory={PARENT}", "-C", str(PARENT), *args]
+            ["git", "-c", f"safe.directory={parent}", "-C", str(parent), *args]
         )
 
     return {
-        "path": str(PARENT),
+        "path": str(parent),
         "head": git("rev-parse", "HEAD").decode().strip(),
         "branch": git("symbolic-ref", "--short", "HEAD").decode().strip(),
         "index_sha256": hashlib.sha256(
-            (PARENT / ".git/index").read_bytes()
+            (parent / ".git/index").read_bytes()
         ).hexdigest(),
         "staged_diff_sha256": hashlib.sha256(
             git("diff", "--cached", "--binary")
@@ -36,18 +35,25 @@ def main():
     parser.add_argument("action", choices=("record", "check"))
     args = parser.parse_args()
     target = PROJECT / "state/parent_before.json"
-    current = snapshot()
     if args.action == "record":
         if target.exists():
             raise RuntimeError("refusing to overwrite original checkout snapshot")
+        parent = PROJECT.parents[1]
+        current = snapshot(parent)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(current, indent=2))
     else:
         before = json.loads(target.read_text())
+        # The independent experiment may move to another disk. Keep guarding
+        # the original checkout recorded in the snapshot, not a new ancestor.
+        parent = Path(before["path"])
+        if not parent.is_absolute():
+            raise RuntimeError("recorded parent path must be absolute")
+        current = snapshot(parent)
         if current != before:
             changed = [key for key in current if current[key] != before[key]]
             raise RuntimeError(f"parent checkout changed: {changed}")
-    print(json.dumps({"action": args.action, "parent": str(PARENT), "ok": True}))
+    print(json.dumps({"action": args.action, "parent": str(parent), "ok": True}))
 
 
 if __name__ == "__main__":

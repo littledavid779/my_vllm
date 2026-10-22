@@ -66,6 +66,8 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 对照时可用 `git worktree add ../cacheblend-baseline <已验证的baseline-tag>` 创建单独目录；按该目录的锁文件和配置重新建立环境。新目录不共享可写的 Python 环境或 KV 缓存。
 不使用 `reset --hard`、`clean` 或覆盖原工作区来回退。当前只在本地提交，不自动发布到远端。
 
+独立实验目录可以整体迁往数据盘，并在 `/home/ljc/vllm/reproductions/cacheblend` 保留软链接，使虚拟环境的旧 shebang 和现有入口继续有效。迁移需保留环境与缓存之间的硬链接（如使用 `rsync -aH`），完成内容校验和运行验证后再移除原副本。`parent_guard.py check` 使用初始状态文件内记录的原工程路径，不根据迁移后的物理目录推断；不要重建或覆盖该初始记录。旧结果中保存的绝对路径作为历史证据保留。
+
 ## 后续验收
 
 1. 官方 smoke：模型成功加载、重排请求命中、实际执行 top-k 选点，记录真实导入位置和环境。
