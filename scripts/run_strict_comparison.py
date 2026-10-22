@@ -24,7 +24,7 @@ def main():
     if state["pids"] or state["memory_mib"] > 100:
         raise RuntimeError("GPU busy")
     progress = {"status": "running", "started": time.time(), "stages": []}
-    current_mode = "strict"  # Prior validated pilot ends with strict patches installed.
+    current_mode = None  # Apply explicitly even after an earlier run restored raw.
 
     def save():
         (root / "progress.json").write_text(json.dumps(progress, indent=2))
@@ -48,7 +48,7 @@ def main():
         if current_mode != target:
             if current_mode == "strict":
                 script("apply_strict_causal_patch.py", "--restore")
-            else:
+            elif current_mode == "block":
                 script("apply_sparse_index_patch.py", "--restore")
             current_mode = None
             name = (

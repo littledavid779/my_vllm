@@ -76,4 +76,6 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 第二轮已在独立 `experiment/cacheblend-round2` 分支扩展官方预算扫描；输入构建、排除规则和计时口径见 [预定实验协议](docs/ROUND2_PROTOCOL.md)。主实验没有修改官方算法，原有 baseline 标签与研究分支保持原样。
 第二轮已完成，见 [结果与后端核验](docs/ROUND2_RESULTS_20261022.md)：主实验保留官方发布配置，额外诊断补丁独立开关并已恢复。没有取得总体准确率改善，尚不能将发布实现的质量缺口归因于论文选择策略。
 
+严格因果校准与两轮等延迟对照已完成，见 [严格因果结果](docs/STRICT_CAUSAL_RESULTS_20261022.md) 和 [协议](docs/STRICT_CAUSAL_PROTOCOL.md)。独立分支 `experiment/strict-causal` 保存可开关的 mask、检查层前 KV 写回诊断及自动恢复脚本；运行后已恢复发布版算法文件。96 来源上的准确率仅增加 1.04 个百分点，区间跨零，尚未证明稳定质量收益。
+
 参考：[CacheBlend 论文](https://arxiv.org/abs/2405.16444v3)、[固定版本 LMCache](https://github.com/LMCache/LMCache/tree/v0.3.13)、[官方兼容说明](https://github.com/LMCache/LMCache/blob/v0.3.13/examples/blend_kv_v1/README.md)。
