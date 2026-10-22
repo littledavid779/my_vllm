@@ -81,3 +81,5 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 严格因果校准与两轮等延迟对照已完成，见 [严格因果结果](docs/STRICT_CAUSAL_RESULTS_20261022.md) 和 [协议](docs/STRICT_CAUSAL_PROTOCOL.md)。独立分支 `experiment/strict-causal` 保存可开关的 mask、检查层前 KV 写回诊断及自动恢复脚本；运行后已恢复发布版算法文件。96 来源上的准确率仅增加 1.04 个百分点，区间跨零，尚未证明稳定质量收益。
 
 参考：[CacheBlend 论文](https://arxiv.org/abs/2405.16444v3)、[固定版本 LMCache](https://github.com/LMCache/LMCache/tree/v0.3.13)、[官方兼容说明](https://github.com/LMCache/LMCache/blob/v0.3.13/examples/blend_kv_v1/README.md)。
+
+固定 10% 预算的问题末段 64-token 修复已完成，协议与结果见 [本轮结果](docs/QUERY_TAIL_RESULTS_20261022.md)。配置和对照保存在 `experiment/query-tail` 分支，运行结束后恢复发布版算法。
