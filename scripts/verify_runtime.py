@@ -1,5 +1,6 @@
 """Record versions and require the wheel's algorithm to match pinned source."""
 
+import argparse
 import hashlib
 import importlib.metadata
 import importlib.util
@@ -17,11 +18,24 @@ from apply_runtime_patch import (
     patched_gpu_connector,
     patched_lmcache,
 )
+from apply_sparse_index_patch import (
+    BACKEND_RELATIVE,
+    SPARSE_RELATIVE,
+    copied_indices,
+    workspace_argument,
+)
 
 PROJECT = Path(__file__).resolve().parents[1]
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--allow-sparse-correctness-fix",
+        action="store_true",
+        dest="allow_sparse_index_fix",
+    )
+    args = parser.parse_args()
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
         raise RuntimeError("use dedicated venv")
     lock = json.loads((PROJECT / "sources.lock.json").read_text())
@@ -36,6 +50,9 @@ def main():
             str(LM_RELATIVE): patched_lmcache,
             str(LM_GPU_RELATIVE): patched_gpu_connector,
         }
+        if args.allow_sparse_index_fix:
+            transforms[str(SPARSE_RELATIVE)] = copied_indices
+            transforms[str(BACKEND_RELATIVE)] = workspace_argument
         if relative in transforms:
             source = PROJECT / "upstream/lmcache" / relative
             expected = hashlib.sha256(
@@ -70,6 +87,7 @@ def main():
         "prefix": sys.prefix,
         "packages": packages,
         "verified_algorithm_files": files,
+        "sparse_correctness_fix": args.allow_sparse_index_fix,
     }
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime.json").write_text(json.dumps(data, indent=2))

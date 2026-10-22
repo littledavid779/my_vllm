@@ -233,6 +233,14 @@ def main():
     parser.add_argument("--lock", type=Path, default=PROJECT / "data.lock.json")
     parser.add_argument("--arms", nargs="+", default=list(ARMS))
     parser.add_argument("--max-model-len", type=int, default=4096)
+    parser.add_argument("--max-num-seqs", type=int, default=1)
+    parser.add_argument("--controls-from", type=Path)
+    parser.add_argument(
+        "--attention-backend", choices=("flashattn", "sparse"), default="flashattn"
+    )
+    parser.add_argument(
+        "--sparse-correctness-fix", action="store_true", dest="sparse_index_fix"
+    )
     args = parser.parse_args()
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
         raise RuntimeError("use dedicated venv")
@@ -261,7 +269,10 @@ def main():
     for name in ("sources.lock.json", "requirements.lock"):
         shutil.copyfile(PROJECT / name, snapshot / name)
     for script in ("verify_sources.py", "verify_runtime.py"):
-        subprocess.run([sys.executable, str(PROJECT / "scripts" / script)], check=True)
+        verification = [sys.executable, str(PROJECT / "scripts" / script)]
+        if script == "verify_runtime.py" and args.sparse_index_fix:
+            verification.append("--allow-sparse-correctness-fix")
+        subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
         "input_sha256": digest,
@@ -275,9 +286,11 @@ def main():
                 if arm.startswith("cacheblend")
             },
             "check_layers": [1],
-            "sparse": False,
+            "sparse": args.attention_backend == "sparse",
+            "sparse_correctness_fix": args.sparse_index_fix,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
+            "max_num_seqs": args.max_num_seqs,
         },
         "source_snapshot_sha256": {
             path.name: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -295,7 +308,9 @@ def main():
             "TRANSFORMERS_OFFLINE": "1",
             "PYTHONHASHSEED": "0",
             "VLLM_USE_V1": "1",
-            "VLLM_ATTENTION_BACKEND": "FLASH_ATTN",
+            "VLLM_ATTENTION_BACKEND": (
+                "FLASHINFER" if args.attention_backend == "sparse" else "FLASH_ATTN"
+            ),
             "VLLM_NO_USAGE_STATS": "1",
             "DO_NOT_TRACK": "1",
             "LMCACHE_TRACK_USAGE": "false",
@@ -305,9 +320,56 @@ def main():
             "PATH": str(PROJECT / ".venv/bin") + os.pathsep + env.get("PATH", ""),
         }
     )
+    if args.attention_backend == "sparse":
+        env.update(
+            {
+                "CUDA_HOME": "/usr/local/cuda",
+                "MAX_JOBS": "4",
+                "FLASHINFER_WORKSPACE_DIR": str(PROJECT / ".cache/flashinfer"),
+                "TORCH_CUDA_ARCH_LIST": "8.0",
+                "PATH": "/usr/local/cuda/bin" + os.pathsep + env["PATH"],
+            }
+        )
     rows = []
+    if args.controls_from:
+        control_manifest = json.loads(
+            (args.controls_from / "manifest.json").read_text()
+        )
+        if control_manifest["input_sha256"] != digest:
+            raise ValueError("control source input differs")
+        config = control_manifest["config"]
+        for field in ("max_num_seqs", "max_model_len", "sparse"):
+            if config[field] != manifest["config"][field]:
+                raise ValueError(f"control source config differs: {field}")
+        control_path = args.controls_from / "requests.jsonl"
+        rows = [
+            json.loads(line)
+            for line in control_path.read_text().splitlines()
+            if json.loads(line)["arm"] in ("full", "prefix")
+        ]
+        expected = {
+            (s["session_id"], v)
+            for s in data["sessions"]
+            for v in range(1, len(s["versions"]))
+        }
+        for arm in ("full", "prefix"):
+            control_rows = [r for r in rows if r["arm"] == arm]
+            if (
+                len(control_rows) != len(expected)
+                or {(r["session_id"], r["version"]) for r in control_rows} != expected
+            ):
+                raise ValueError("control source is incomplete")
+        (root / "requests.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in rows)
+        )
+        manifest["controls_from"] = str(args.controls_from.resolve())
+        manifest["controls_sha256"] = hashlib.sha256(
+            control_path.read_bytes()
+        ).hexdigest()
     try:
         for arm in args.arms:
+            if args.controls_from and arm in ("full", "prefix"):
+                continue
             before = gpu_state(args.gpu)
             if before["pids"] or before["memory_mib"] > 100:
                 raise RuntimeError("GPU is busy")
@@ -328,7 +390,7 @@ def main():
                 "--max-num-batched-tokens",
                 str(args.max_model_len),
                 "--max-num-seqs",
-                "1",
+                str(args.max_num_seqs),
                 "--gpu-memory-utilization",
                 "0.45",
                 "--enforce-eager",
@@ -345,6 +407,8 @@ def main():
                 else "--no-enable-prefix-caching"
             ]
             if arm.startswith("cacheblend"):
+                if args.attention_backend == "sparse":
+                    mode_env["LMCACHE_EXTRA_CONFIG"] = '{"enable_sparse": true}'
                 mode_env.update(
                     {
                         "LMCACHE_ENABLE_BLENDING": "True",

@@ -92,6 +92,24 @@ def main():
     rows = json.loads((root / "results.json").read_text())
     data = json.loads((root / "input.json").read_text())
     sessions = {s["session_id"]: s for s in data["sessions"]}
+    layout = []
+    for placement in ("natural4k", "early8k"):
+        group = [s for s in sessions.values() if s["placement"] == placement]
+        layout.append(
+            {
+                "placement": placement,
+                "mean_prompt_tokens": statistics.mean(
+                    s["prompt_tokens"] for s in group
+                ),
+                "mean_suffix_tokens": statistics.mean(
+                    s["suffix_tokens"] for s in group
+                ),
+                "mean_edit_fraction": statistics.mean(
+                    s["editable_token_span"][0] / s["prompt_tokens"] for s in group
+                ),
+            }
+        )
+    (root / "layout.json").write_text(json.dumps(layout, indent=2))
     arms = manifest["config"]["arms"]
     references = {
         (r["session_id"], r["version"]): r for r in rows if r["arm"] == "full"
@@ -174,6 +192,44 @@ def main():
             }
         )
     (root / "budget_recovery.json").write_text(json.dumps(recovery, indent=2))
+    budget_steps = []
+    for placement in ("natural4k", "early8k"):
+        for lower, higher in (
+            ("cacheblend5", "cacheblend15"),
+            ("cacheblend15", "cacheblend30"),
+        ):
+            low = next(
+                g
+                for g in summary
+                if g["placement"] == placement
+                and g["family"] == "all"
+                and g["arm"] == lower
+            )
+            high = next(
+                g
+                for g in summary
+                if g["placement"] == placement
+                and g["family"] == "all"
+                and g["arm"] == higher
+            )
+            selected = [
+                r for r in rows if r["arm"] == higher and r["placement"] == placement
+            ]
+            lower_refs = {
+                (r["session_id"], r["version"]): r for r in rows if r["arm"] == lower
+            }
+            budget_steps.append(
+                {
+                    "placement": placement,
+                    "lower": lower,
+                    "higher": higher,
+                    "accuracy_gain": high["task_accuracy"] - low["task_accuracy"],
+                    "accuracy_gain_95ci": clustered_gap(selected, lower_refs),
+                    "mean_ttft_change": high["ttft_mean_ms"] / low["ttft_mean_ms"] - 1,
+                    "p95_ttft_change": high["ttft_p95_ms"] / low["ttft_p95_ms"] - 1,
+                }
+            )
+    (root / "budget_steps.json").write_text(json.dumps(budget_steps, indent=2))
     by_edit = []
     for placement in ("natural4k", "early8k"):
         for version in (1, 2, 3):

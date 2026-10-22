@@ -1,0 +1,25 @@
+--- a/lmcache/v1/compute/attention/flash_infer_sparse.py
++++ b/lmcache/v1/compute/attention/flash_infer_sparse.py
+@@ -246,7 +246,12 @@
+                 return_lse=False,
+             )
+         else:
+-            output = attn_metadata.wrapper.run(query, key, value, output)
++            sparse_output = attn_metadata.wrapper.run(
++                query.transpose(0, 1),
++                key.transpose(0, 1),
++                value.transpose(0, 1),
++            )
++            output.copy_(sparse_output.transpose(0, 1))
+         return output
+ 
+     def init_attn_metadata(
+@@ -258,7 +263,7 @@
+         Initialize non-sparse attention metadata first.
+         """
+ 
+-        wrapper = HackBSAWrapper(self.workspace_buffer)
++        wrapper = VariableBlockSparseAttentionWrapper(self.workspace_buffer)
+         seq_len = len(input_ids)
+ 
+         # TODO(Jiayi): remove this hardcode

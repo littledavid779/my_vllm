@@ -73,6 +73,7 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 3. 先得到 baseline 的质量—TTFT 曲线，再在独立优化分支修改一个机制；相近延迟比较均值和 P95，计入选择开销。
 4. 原有人工构造任务仅用于诊断；公开任务与中间编辑衍生任务分开汇报。连续编辑沿用各方法自己的缓存，并增加从精确缓存重新开始的对照。
 
-第二轮已在独立 `experiment/cacheblend-round2` 分支扩展官方预算扫描；输入构建、排除规则和计时口径见 [预定实验协议](docs/ROUND2_PROTOCOL.md)。此分支没有修改官方算法，原有 baseline 标签与研究分支保持原样。
+第二轮已在独立 `experiment/cacheblend-round2` 分支扩展官方预算扫描；输入构建、排除规则和计时口径见 [预定实验协议](docs/ROUND2_PROTOCOL.md)。主实验没有修改官方算法，原有 baseline 标签与研究分支保持原样。
+第二轮已完成，见 [结果与后端核验](docs/ROUND2_RESULTS_20261022.md)：主实验保留官方发布配置，额外诊断补丁独立开关并已恢复。没有取得总体准确率改善，尚不能将发布实现的质量缺口归因于论文选择策略。
 
 参考：[CacheBlend 论文](https://arxiv.org/abs/2405.16444v3)、[固定版本 LMCache](https://github.com/LMCache/LMCache/tree/v0.3.13)、[官方兼容说明](https://github.com/LMCache/LMCache/blob/v0.3.13/examples/blend_kv_v1/README.md)。

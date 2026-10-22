@@ -28,3 +28,40 @@
   --output results/round2_NEW
 .venv/bin/python scripts/analyze_round2.py --run results/round2_NEW
 ```
+
+## 运行中发现的后端因素：追加诊断
+
+默认 FlashAttention 的 `LMCFlashAttnMetadata.update_from_top_indices` 只更新压缩后的 Q 长度；`LMCFlashAttnBackend` 仍传入 `causal=True`，没有传原始离散 Q 位置。已安装 FlashAttention 接口明确规定长短 Q/K 时因果 mask 按右下对齐。
+例如长度 5、选择原位置 `[0, 3]`，压缩后两个 Q 会按位置 `[3, 4]` 建 mask，允许访问原位置对应的未来 K。这个后端差异可能影响质量，不能将本轮所有新增错误直接归因于 token 选择策略。
+
+因此在观察到 5% 预算出现多来源错误后，追加官方 FlashInfer sparse 路径小对照。按每类排序最前四个来源固定选取，共 12 来源、24 条链；不依赖其模型输出或是否失败。使用相同输入、同一框架的 full/prefix 控制和官方 sparse 15% 配置。它是探索性后端诊断，不替代预定的 108 来源结果，也不是提出新方法。
+官方 sparse 模式由 `VLLM_ATTENTION_BACKEND=FLASHINFER` 和 `LMCACHE_EXTRA_CONFIG={"enable_sparse": true}` 开启；仍使用锁定的 FlashInfer 0.3.1。初始化/JIT 开销单独留档，失败也保留日志。
+CPU 调用还确认：sparse metadata 的 `top_indices_slice //=` 会通过视图修改传入的 token 索引。例如输入 `arange(64)` 的第 31、63 个索引变成 0、1；blender 后续使用的索引与该张量共享引用。因此 sparse 原始运行结果也需要结合此实现问题解释，本轮不把修正它视作新研究机制。
+
+```bash
+.venv/bin/python scripts/make_backend_probe.py \
+  --input data/round2_screen.json --output data/round2_sparse_probe.json
+.venv/bin/python scripts/run_http_pilot.py \
+  --input data/round2_sparse_probe.json --lock data/round2_sparse_probe.lock.json \
+  --max-model-len 12288 --max-num-seqs 16 --port 18265 --attention-backend sparse \
+  --arms full prefix cacheblend15 --output results/round2_sparse_NEW
+```
+
+vLLM 0.11 FlashInfer 初始化固定构造 9 条 warmup 序列；`max_num_seqs=1` 会在启动时数组广播失败。因此小对照的 full/prefix/sparse 都使用容量 16，但客户端实际并发仍为 1。第一次失败没有测量结果，不计入质量或延迟汇总。
+
+原始 sparse 对照运行成功后，进一步发现 `is_causal=False` 被注释，后续一直走普通右下对齐 causal 分支，并没有执行已构造的 sparse mask。追加同一固定输入的正确性诊断：启用该分支，并将 mask 用的切片改成 `.clone()`，以防原地整除污染 KV 写入位置。CPU 回归检查要求“计划的 block mask 不变、传入索引不变、选择后切换 sparse 路径”。该补丁是 baseline 正确性校正，不能算作新选择算法，也不据此声称超过论文方法。
+应用与恢复都仅修改专用 venv，原上游 checkout 不动；运行配置和校验显式区分原始/修正版。
+真正运行该分支后，还暴露了旧 `HackBSAWrapper` 与 FlashInfer 0.3.1 的接口/布局不一致：缺少 `workspace_size`，仅补参数后 GQA 布局又触发非法显存访问。最终诊断改用 FlashInfer 自带 `VariableBlockSparseAttentionWrapper`，在入口/出口转换 NHD/HND 布局；block mask、检查层和 top-k 打分仍不变。
+这仍不是严格因果的最终 baseline：官方按 32 个选择查询分组近似 mask，组内原始位置可能相距很远；仍需对照逐 token 的严格因果执行。诊断流程没有取得整体质量改善时，不将其作为优化方案提交。
+
+```bash
+.venv/bin/python scripts/apply_sparse_index_patch.py
+.venv/bin/python scripts/run_http_pilot.py \
+  --input data/round2_sparse_probe.json --lock data/round2_sparse_probe.lock.json \
+  --max-model-len 12288 --max-num-seqs 16 --port 18265 --attention-backend sparse \
+  --sparse-correctness-fix --arms full prefix cacheblend15 --output results/round2_sparse_fixed_NEW
+.venv/bin/python scripts/apply_sparse_index_patch.py --restore
+.venv/bin/python scripts/verify_runtime.py
+```
+
+失败日志依次保存在 `round2_sparse_20261022`、`round2_sparse_fixed_20261022`、`round2_sparse_fixed_workspace_20261022`；最终成功的 block-mask 诊断为 `round2_sparse_public_api_20261022`。最终运行通过 `--controls-from` 复用已完整测量的 FI full/prefix 对照，输入哈希、容量、后端与事件完整性均校验；manifest 保留控制来源及内容哈希，不把复用的 144 条记录当成新测量。

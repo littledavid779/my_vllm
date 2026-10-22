@@ -1,0 +1,22 @@
+{
+  "input_sha256": "33157492fdcf42e3d2c3b27023482b477e9beb8ffca4f706ce809bcb5035e544",
+  "probe": {
+    "selection": "first sorted four source IDs per family, no response filtering",
+    "source_ids": [
+      "qa2_002",
+      "qa2_003",
+      "qa2_004",
+      "qa2_005",
+      "qa3_002",
+      "qa3_003",
+      "qa3_004",
+      "qa3_005",
+      "qa9_002",
+      "qa9_003",
+      "qa9_004",
+      "qa9_005"
+    ],
+    "parent_sha256": "14548020374fac13a83e32b7ac435274f6b5a60f57e50975ccb04375a3f8d4df"
+  },
+  "builder_sha256": "c532283a58308d6455d90dc110d6db9dec8556ba4e18de661a320ae996caf28f"
+}
