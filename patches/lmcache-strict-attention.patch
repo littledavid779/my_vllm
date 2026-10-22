@@ -1,0 +1,57 @@
+--- a/lmcache/v1/compute/attention/flash_infer_sparse.py
++++ b/lmcache/v1/compute/attention/flash_infer_sparse.py
+@@ -211,42 +211,19 @@
+         self.k_scale = vllm_attn._k_scale_float
+         self.v_scale = vllm_attn._v_scale_float
+ 
+-    def forward_contiguous(
+-        self,
+-        query: torch.Tensor,
+-        key: torch.Tensor,
+-        value: torch.Tensor,
+-        output: torch.Tensor,
+-        attn_metadata: "LMCAttnMetadata",
+-        **kwargs,
+-    ) -> torch.Tensor:
++    def forward_contiguous(self, query, key, value, output, attn_metadata, **kwargs):
+         assert isinstance(attn_metadata, LMCFlashInferSparseMetadata)
+-        is_causal = attn_metadata.is_causal
+-        if is_causal:
+-            output = flashinfer.prefill.single_prefill_with_kv_cache(
+-                q=query,
+-                k=key,
+-                v=value,
+-                scale_q=None,
+-                scale_k=self.k_scale,
+-                scale_v=self.v_scale,
+-                o_dtype=query.dtype,
+-                custom_mask=None,
+-                packed_custom_mask=None,
+-                causal=True,
+-                kv_layout="NHD",
+-                pos_encoding_mode="NONE",
+-                use_fp16_qk_reduction=False,
+-                sm_scale=self.sm_scale,
+-                window_left=self.window_left,
+-                logits_soft_cap=self.logits_soft_cap,
+-                rope_scale=None,
+-                rope_theta=None,
+-                backend="auto",
+-                return_lse=False,
+-            )
+-        else:
+-            output = attn_metadata.wrapper.run(query, key, value, output)
++        packed = attn_metadata.strict_packed_mask
++        result = flashinfer.prefill.single_prefill_with_kv_cache(
++            q=query, k=key, v=value,
++            scale_q=None, scale_k=self.k_scale, scale_v=self.v_scale,
++            o_dtype=query.dtype, custom_mask=None, packed_custom_mask=packed,
++            causal=packed is None, kv_layout="NHD", pos_encoding_mode="NONE",
++            use_fp16_qk_reduction=False, sm_scale=self.sm_scale,
++            window_left=self.window_left, logits_soft_cap=self.logits_soft_cap,
++            rope_scale=None, rope_theta=None, backend="auto", return_lse=False,
++        )
++        output.copy_(result)
+         return output
+ 
+     def init_attn_metadata(

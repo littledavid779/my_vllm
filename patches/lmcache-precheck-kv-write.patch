@@ -1,0 +1,15 @@
+--- a/lmcache/v1/compute/blend/blender.py
++++ b/lmcache/v1/compute/blend/blender.py
+@@ -117,7 +117,11 @@
+             old_v[self.metadata.imp_indices] = v
+             return q, old_k, old_v, residual, attn_output, attn_metadata
+         else:
+-            return q, k, v, residual, attn_output, attn_metadata
++            # These layers are already fully computed. Export their current KV,
++            # including separator gaps, rather than the retrieved stale buffer.
++            old_k.copy_(k)
++            old_v.copy_(v)
++            return q, old_k, old_v, residual, attn_output, attn_metadata
+ 
+     # NOTE(Jiayi): Exposing this `blend_layer` interface as we might
+     # want to ochestrate the blending process elsewhere

@@ -1,0 +1,14 @@
+{
+  "input_sha256": "814dc687ca37d5433be7cbe31da41aa82182a22b38b128dc092ab5ebb54c84ca",
+  "protocol": {
+    "phase": "strict causal calibration extension",
+    "sources": 96,
+    "selection": "all early8k sources outside the fixed 12-source pilot",
+    "response_filtering": false,
+    "edits": 3,
+    "parent_sha256": "14548020374fac13a83e32b7ac435274f6b5a60f57e50975ccb04375a3f8d4df",
+    "pilot_sha256": "33157492fdcf42e3d2c3b27023482b477e9beb8ffca4f706ce809bcb5035e544",
+    "caveat": "Sources used in round2 release screening; no tuning here."
+  },
+  "builder_sha256": "67cc196ce8fc5e2f3584b714c3522a24f18d29ddde50f662fe61545a0f39fe7b"
+}

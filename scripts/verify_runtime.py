@@ -10,6 +10,8 @@ import sys
 import sysconfig
 from pathlib import Path
 
+from apply_precheck_kv_patch import RELATIVE as PRECHECK_RELATIVE
+from apply_precheck_kv_patch import commit_precheck
 from apply_runtime_patch import (
     LM_GPU_RELATIVE,
     LM_RELATIVE,
@@ -24,6 +26,7 @@ from apply_sparse_index_patch import (
     copied_indices,
     workspace_argument,
 )
+from apply_strict_causal_patch import strict_backend, strict_metadata
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -35,7 +38,11 @@ def main():
         action="store_true",
         dest="allow_sparse_index_fix",
     )
+    parser.add_argument("--allow-strict-causal", action="store_true")
+    parser.add_argument("--allow-precheck-kv-write", action="store_true")
     args = parser.parse_args()
+    if args.allow_strict_causal and args.allow_sparse_index_fix:
+        parser.error("strict and block-mask diagnostics cannot be mixed")
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
         raise RuntimeError("use dedicated venv")
     lock = json.loads((PROJECT / "sources.lock.json").read_text())
@@ -53,6 +60,11 @@ def main():
         if args.allow_sparse_index_fix:
             transforms[str(SPARSE_RELATIVE)] = copied_indices
             transforms[str(BACKEND_RELATIVE)] = workspace_argument
+        if args.allow_strict_causal:
+            transforms[str(SPARSE_RELATIVE)] = strict_metadata
+            transforms[str(BACKEND_RELATIVE)] = strict_backend
+        if args.allow_precheck_kv_write:
+            transforms[str(PRECHECK_RELATIVE)] = commit_precheck
         if relative in transforms:
             source = PROJECT / "upstream/lmcache" / relative
             expected = hashlib.sha256(
@@ -88,6 +100,8 @@ def main():
         "packages": packages,
         "verified_algorithm_files": files,
         "sparse_correctness_fix": args.allow_sparse_index_fix,
+        "strict_causal": args.allow_strict_causal,
+        "precheck_kv_write": args.allow_precheck_kv_write,
     }
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime.json").write_text(json.dumps(data, indent=2))

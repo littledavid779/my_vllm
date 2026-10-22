@@ -241,7 +241,13 @@ def main():
     parser.add_argument(
         "--sparse-correctness-fix", action="store_true", dest="sparse_index_fix"
     )
+    parser.add_argument("--strict-causal", action="store_true")
+    parser.add_argument("--precheck-kv-write", action="store_true")
     args = parser.parse_args()
+    if args.strict_causal and (
+        args.attention_backend != "sparse" or args.sparse_index_fix
+    ):
+        parser.error("strict mask requires FlashInfer and no block-mask patch")
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
         raise RuntimeError("use dedicated venv")
     data_path = args.input.resolve()
@@ -272,6 +278,10 @@ def main():
         verification = [sys.executable, str(PROJECT / "scripts" / script)]
         if script == "verify_runtime.py" and args.sparse_index_fix:
             verification.append("--allow-sparse-correctness-fix")
+        if script == "verify_runtime.py" and args.strict_causal:
+            verification.append("--allow-strict-causal")
+        if script == "verify_runtime.py" and args.precheck_kv_write:
+            verification.append("--allow-precheck-kv-write")
         subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
@@ -288,6 +298,8 @@ def main():
             "check_layers": [1],
             "sparse": args.attention_backend == "sparse",
             "sparse_correctness_fix": args.sparse_index_fix,
+            "strict_causal": args.strict_causal,
+            "precheck_kv_write": args.precheck_kv_write,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
             "max_num_seqs": args.max_num_seqs,
