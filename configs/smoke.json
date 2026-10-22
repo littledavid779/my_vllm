@@ -1,0 +1,14 @@
+{
+  "model": "/hole0/model_info/model_zoo/downloads/Qwen3-8B",
+  "gpu": 1,
+  "max_model_len": 16384,
+  "gpu_memory_utilization": 0.45,
+  "max_num_seqs": 1,
+  "blend_check_layers": [1],
+  "blend_recompute_ratio": 0.15,
+  "enable_sparse": false,
+  "chunk_size": 256,
+  "cpu_cache_gb": 5,
+  "max_new_tokens": 1,
+  "note": "Official reordered-chunk smoke path; not a task-quality benchmark or HTTP TTFT result."
+}

@@ -1,0 +1,12 @@
+# Runtime candidate: fixed before executing experiments.
+# LMCache v0.3.13 build-system pins torch 2.8; vLLM v0.11.0 does too.
+vllm==0.11.0
+lmcache==0.3.13
+torch==2.8.0
+transformers==4.57.6
+# Version explicitly named in upstream's sparse attention implementation.
+flashinfer-python==0.3.1
+pre-commit==4.2.0
+ruff==0.14.0
+pytest==8.4.2
+

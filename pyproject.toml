@@ -1,0 +1,12 @@
+[project]
+name = "cacheblend-reproduction"
+version = "0.1.0"
+description = "Isolated, version-pinned CacheBlend baseline reproduction"
+requires-python = ">=3.12,<3.13"
+
+[tool.ruff]
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+

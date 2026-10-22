@@ -1,0 +1,15 @@
+.venv/
+.uv-cache/
+.cache/
+upstream/
+results/
+state/
+data/
+models/
+wheels/
+__pycache__/
+*.pyc
+*.log
+.env
+.env.*
+

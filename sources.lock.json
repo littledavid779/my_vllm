@@ -1,0 +1,38 @@
+{
+  "paper": "https://arxiv.org/abs/2405.16444v3",
+  "baseline": "LMCache released CacheBlend implementation; not claimed identical to all EuroSys paper settings",
+  "upstream": {
+    "lmcache": {
+      "path": "upstream/lmcache",
+      "repository": "https://github.com/LMCache/LMCache.git",
+      "tag": "v0.3.13",
+      "commit": "fc031d471a566edb6d49a86c9116cc23cfb04111",
+      "files_sha256": {
+        "lmcache/v1/compute/blend/blender.py": "94bfd0051151cc71f31aca914b991acb069eef9d99781b7e1308c564f972e2a8",
+        "lmcache/v1/compute/models/qwen3.py": "1f8547f3c632ebe2900f3cfd701ee70b1c861e8e39b2a5b3f78375654f2a1398",
+        "examples/blend_kv_v1/blend.py": "08a500d53ff5210e7701092c77f210daa6aa44806e8ae6eb500c93be40a86cf4",
+        "examples/blend_kv_v1/README.md": "2c0a57494ac872049d34bff775190bf6ca865dd7a16153378c48b43a837ae6e8",
+        "lmcache/v1/compute/blend/metadata.py": "ce9c01688d8da8aafc8d84fbb31dc2163a6bdb452fd186a157e52da88e246425",
+        "lmcache/v1/compute/models/base.py": "86b38fc33e070ba50d88126babd017b6a4161163824c9a56acdcd527ca860b7b",
+        "lmcache/v1/compute/models/utils.py": "7c1c35660bf16d2779b8e7d9f2ff16709daad87b94a36a0b38247296ecb5a138",
+        "lmcache/v1/compute/attention/metadata.py": "de7ffa36d78688fd4f17100ec2bde0e3dae931581fdf644edaa076455e1559ce",
+        "lmcache/v1/compute/attention/flash_attn.py": "7997930e93aaec4ad781717d2c4455d10a3cad662d51971d8db78195cac5d88f",
+        "lmcache/v1/compute/attention/flash_infer_sparse.py": "78865a560855d696632640733b1da7b089b58891cf69b19c93cfb645c9f074d5",
+        "lmcache/v1/compute/attention/utils.py": "e5ff46f27f128c8af1c6e5b3e06115b93f410e937e8bcf6efa543f4933575d83",
+        "lmcache/integration/vllm/vllm_v1_adapter.py": "96de295fd5269c3f30521527319e55e38c98da4d235ae72a3a68e525b865f577",
+        "lmcache/integration/vllm/utils.py": "f3685b51632fc960c27f43b3206364b40d3522fc8928d0a0ca1206937971746d",
+        "lmcache/v1/token_database.py": "73392eabe9b33dddb8ec2bb42488a4e87d5fbebd66b341f190bf23810c5acaed",
+        "lmcache/v1/cache_engine.py": "b620d520083a45c57cf236a3adb178fc6117cb2b1177dba6ffb43b0233032016"
+      }
+    },
+    "vllm": {
+      "path": "upstream/vllm",
+      "repository": "https://github.com/vllm-project/vllm.git",
+      "tag": "v0.11.0",
+      "commit": "b8b302cde434df8c9289a2b465406b47ebab1c2d",
+      "files_sha256": {
+        "vllm/v1/worker/gpu_worker.py": "e06833e8a5247dea488f067078b9f64e1284ca9c97b248b279852b046e815256"
+      }
+    }
+  }
+}
