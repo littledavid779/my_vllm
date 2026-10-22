@@ -1,0 +1,62 @@
+{
+  "source_path": "/home/ljc/vllm/results/suffix_public_http_corrected_gpu1_20261021/input.json",
+  "source_sha256": "c0f83d2a3decd1305ab5ab2686a13088e2936d0d71245278106c0149d9c57a6b",
+  "adaptation": "Insert chunk separators at A/B and B/C; gold unchanged.",
+  "separator_ids": [
+    671
+  ],
+  "scope": "Small middle-edit diagnostic; not the original paper benchmark.",
+  "input_sha256": "71fd3de30313cbc7b65057bbc2c56192d0ad5513de366886f1022ed23a43b312",
+  "model": "/hole0/model_info/model_zoo/downloads/Qwen3-8B",
+  "sessions": 8,
+  "source_manifest": {
+    "babilong_revision": "ee0d588794c7ac098062ee0d247c733d62e94fe2",
+    "ruler_revision": "main",
+    "sources": {
+      "qa2_0k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa2/0k.json",
+        "sha256": "7baae649af9883d84eeaec422d847064cf136b3de3eebcc08ea6d75af39c60e9"
+      },
+      "qa2_4k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa2/4k.json",
+        "sha256": "420fc8e4a52d39b7bfeb4e44d7782c5f0ae7ba10144c00485f0bb332f4ceaced"
+      },
+      "qa3_0k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa3/0k.json",
+        "sha256": "36a7bae93e535b89dd7a779621ca339674e2c2a646ceef43a505295f6d5336c2"
+      },
+      "qa3_4k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa3/4k.json",
+        "sha256": "6cca199e011107f26b31a6f4af9dfab1b3b81c1ff8da4d4271e3a9c67c7d8fad"
+      },
+      "qa9_0k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa9/0k.json",
+        "sha256": "8bbd71a53dcfbc5ef79fffe3bcb0c40be00cb5d6a17a5575f86a1fb079eb175f"
+      },
+      "qa9_4k.json": {
+        "url": "https://huggingface.co/datasets/RMT-team/babilong/resolve/ee0d588794c7ac098062ee0d247c733d62e94fe2/data/qa9/4k.json",
+        "sha256": "476632adc3ab469350fd21fcede0a50307d9983e42c6e76d44c3a0da062d1013"
+      },
+      "ruler_variable_tracking.py": {
+        "url": "https://raw.githubusercontent.com/NVIDIA/RULER/main/scripts/data/synthetic/variable_tracking.py",
+        "sha256": "9aac483420e158d116ab63fc43b9606bdb284ac0c053288c30776d5c365530e5"
+      },
+      "ruler_constants.py": {
+        "url": "https://raw.githubusercontent.com/NVIDIA/RULER/main/scripts/data/synthetic/constants.py",
+        "sha256": "6296e901d495ec6200dc3f68993ea13d8282e3c0dbe1a8c47967f111105d1fde"
+      },
+      "ruler_eval_constants.py": {
+        "url": "https://raw.githubusercontent.com/NVIDIA/RULER/main/scripts/eval/synthetic/constants.py",
+        "sha256": "6740467c17b8dc06b6b30f4f97e54ce8de81db0dd879f1538d0b6b5727f4bd5f"
+      },
+      "RULER_LICENSE": {
+        "url": "https://raw.githubusercontent.com/NVIDIA/RULER/main/LICENSE",
+        "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+      },
+      "babilong_prompts.py": {
+        "url": "https://raw.githubusercontent.com/booydar/babilong/main/babilong/prompts.py",
+        "sha256": "be08d7e466170177e38fddb997e3dd9ffb281d5a830edd240933e069a9c5c2ee"
+      }
+    }
+  }
+}

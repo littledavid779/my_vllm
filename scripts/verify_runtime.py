@@ -9,7 +9,14 @@ import sys
 import sysconfig
 from pathlib import Path
 
-from apply_runtime_patch import RELATIVE, patched
+from apply_runtime_patch import (
+    LM_GPU_RELATIVE,
+    LM_RELATIVE,
+    RELATIVE,
+    patched,
+    patched_gpu_connector,
+    patched_lmcache,
+)
 
 PROJECT = Path(__file__).resolve().parents[1]
 
@@ -25,6 +32,15 @@ def main():
             continue
         path = site / relative
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        transforms = {
+            str(LM_RELATIVE): patched_lmcache,
+            str(LM_GPU_RELATIVE): patched_gpu_connector,
+        }
+        if relative in transforms:
+            source = PROJECT / "upstream/lmcache" / relative
+            expected = hashlib.sha256(
+                transforms[relative](source.read_text()).encode()
+            ).hexdigest()
         if actual != expected:
             raise ValueError(f"installed baseline algorithm differs: {relative}")
         files[relative] = actual

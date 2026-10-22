@@ -1,0 +1,18 @@
+--- a/lmcache/v1/gpu_connector.py
++++ b/lmcache/v1/gpu_connector.py
+@@ -810,6 +810,7 @@
+                     False,
+                     False,  # shape is [2, num_tokens, hidden_dim]
+                     self.vllm_two_major,
++                    False,  # use_mla (full attention)
+                 )
+                 del self.buffer_mapping[layer_id - 2]
+ 
+@@ -970,6 +971,7 @@
+                     True,
+                     False,  # shape is [2, num_tokens, hidden_dim]
+                     self.vllm_two_major,
++                    False,  # use_mla (full attention)
+                 )
+                 for (buf_start, buf_end), memory_obj, old_positions in zip(
+                     buf_starts_ends,

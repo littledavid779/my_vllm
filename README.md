@@ -9,7 +9,7 @@
 - `upstream/vllm/`：vLLM v0.11.0 原始源码；独立上游 Git checkout。
 - `requirements.in` / `requirements.lock`：直接依赖与完整依赖、下载哈希。
 - `.venv/` / `.uv-cache/`：专用环境与下载缓存。
-- `patches/`：官方示例要求的初始化顺序兼容补丁，另存为可审阅文件。
+- `patches/`：初始化顺序及 token 容器序列化的兼容补丁，另存为可审阅文件。
 - `configs/` / `scripts/`：实验配置及可重跑入口。
 - `results/`：原始运行日志与 manifest，不进入 Git。
 - `state/parent_before.json`：原工程状态校验，不进入 Git。
@@ -38,10 +38,24 @@ uv --cache-dir .uv-cache pip sync --python .venv/bin/python --require-hashes req
 .venv/bin/python scripts/run_smoke.py --output results/smoke_NEW
 ```
 
+已有公开来源负载的 HTTP 管线验证：
+
+```bash
+.venv/bin/python scripts/prepare_pilot.py \
+  --source /home/ljc/vllm/results/suffix_public_http_corrected_gpu1_20261021/input.json
+.venv/bin/python scripts/run_http_pilot.py --output results/http_NEW
+```
+
+`prepare_pilot.py` 对已有标准答案负载只插入官方分块分隔符，输入及来源哈希保存在 `data.lock.json`，原始 token 数据保存在忽略的 `data/`。warmup 使用不与测量输入重合的合成块，避免把被测编辑提前变成完整缓存命中。
+HTTP 验证逐个启动独立服务，对比完整重算、原生前缀与官方 CacheBlend 15%，客户端通过 SSE 的首个生成 token 计时；不是原论文数据集复现或新的优化结果。
+
 复现初次建立时，`parent_guard.py record` 已保存原工程状态；后续使用 `parent_guard.py check`，不覆盖初始记录。
 在新 worktree 中，先用 `parent_guard.py record` 建立该 worktree 的独立状态记录。
 `apply_runtime_patch.py` 只允许修改此目录 `.venv` 中与固定上游源码一致的 worker 文件，遇到其他版本立即停止；`--restore` 可恢复这个文件的上游原始内容。
 兼容修改来自 LMCache 固定版本的示例 README：模型加载后登记模型，再初始化 KV transfer。官方算法文件保持原样。
+另有一行版本兼容修改：在 LMCache 的 vLLM 请求适配器中，将 `request.all_token_ids` 转为普通 `list`，使 vLLM 0.11 的只读 `ConstantList` 能通过 msgspec 序列化。token 内容与顺序不变，重算打分与选点不变。
+补丁通过原子替换文件应用，避免修改 uv wheel cache 的硬链接；安装缓存保持上游原始内容。
+该版本 buffer connector 的两个全注意力传输调用还漏传了 pybind 要求的 `use_mla` 参数；第三个补丁按 C++ 声明的默认语义显式传入 `False`，不修改 CUDA 内核或重算策略。
 
 ## Git 与回退
 

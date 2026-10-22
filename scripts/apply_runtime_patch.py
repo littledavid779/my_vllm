@@ -1,14 +1,19 @@
-"""Apply the official LMCache worker-initialization recipe only to this venv."""
+"""Apply explicit integration compatibility patches only to this venv."""
 
 import argparse
+import ast
 import difflib
 import hashlib
 import json
+import os
 import sysconfig
+import tempfile
 from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
 RELATIVE = Path("vllm/v1/worker/gpu_worker.py")
+LM_RELATIVE = Path("lmcache/integration/vllm/vllm_v1_adapter.py")
+LM_GPU_RELATIVE = Path("lmcache/v1/gpu_connector.py")
 
 
 def digest(data):
@@ -35,6 +40,37 @@ def patched(text):
     )
 
 
+def patched_lmcache(text):
+    old = "            token_ids = request.all_token_ids\n"
+    if text.count(old) != 1:
+        raise ValueError("unexpected LMCache request-token adapter source")
+    return text.replace(old, "            token_ids = list(request.all_token_ids)\n")
+
+
+def patched_gpu_connector(text):
+    # C++ declares use_mla=false, but pybind exposes seven required arguments.
+    # Two full-attention buffer-path call sites still pass only six arguments.
+    tree = ast.parse(text)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "single_layer_kv_transfer"
+        and len(node.args) == 6
+    ]
+    if len(calls) != 2:
+        raise ValueError("unexpected six-argument transfer call sites")
+    lines = text.splitlines(keepends=True)
+    for node in sorted(calls, key=lambda n: n.end_lineno, reverse=True):
+        previous = lines[node.end_lineno - 2]
+        indent = previous[: len(previous) - len(previous.lstrip())]
+        lines.insert(
+            node.end_lineno - 1, indent + "False,  # use_mla (full attention)\n"
+        )
+    return "".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--record", action="store_true", help="save reviewable patch")
@@ -42,46 +78,62 @@ def main():
         "--restore", action="store_true", help="restore this venv's file"
     )
     args = parser.parse_args()
-    original = (PROJECT / "upstream/vllm" / RELATIVE).read_bytes()
-    modified = patched(original.decode()).encode()
-    compile(modified, str(RELATIVE), "exec")
-    if args.record:
-        destination = PROJECT / "patches/vllm-worker-registration.patch"
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(
-            "".join(
-                difflib.unified_diff(
-                    original.decode().splitlines(keepends=True),
-                    modified.decode().splitlines(keepends=True),
-                    fromfile="a/" + str(RELATIVE),
-                    tofile="b/" + str(RELATIVE),
+    plans = (
+        ("vllm", RELATIVE, patched, "vllm-worker-registration.patch"),
+        ("lmcache", LM_RELATIVE, patched_lmcache, "lmcache-constant-list.patch"),
+        (
+            "lmcache",
+            LM_GPU_RELATIVE,
+            patched_gpu_connector,
+            "lmcache-transfer-args.patch",
+        ),
+    )
+    pending, files = [], []
+    for owner, relative, transform, patch_name in plans:
+        original = (PROJECT / "upstream" / owner / relative).read_bytes()
+        modified = transform(original.decode()).encode()
+        compile(modified, str(relative), "exec")
+        if args.record:
+            destination = PROJECT / "patches" / patch_name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_text(
+                "".join(
+                    difflib.unified_diff(
+                        original.decode().splitlines(keepends=True),
+                        modified.decode().splitlines(keepends=True),
+                        fromfile="a/" + str(relative),
+                        tofile="b/" + str(relative),
+                    )
                 )
             )
+            continue
+        target = Path(sysconfig.get_paths()["purelib"]) / relative
+        if not target.resolve().is_relative_to(PROJECT / ".venv"):
+            raise ValueError(f"refusing to patch outside dedicated venv: {target}")
+        if target.read_bytes() not in (original, modified):
+            raise ValueError(f"installed file differs from known states: {relative}")
+        desired = original if args.restore else modified
+        pending.append((target, desired))
+        files.append(
+            {
+                "target": str(target),
+                "original_sha256": digest(original),
+                "patched_sha256": digest(modified),
+                "current_sha256": digest(desired),
+                "patch": patch_name,
+            }
         )
-        print(
-            json.dumps(
-                {
-                    "original_sha256": digest(original),
-                    "patched_sha256": digest(modified),
-                }
-            )
-        )
+    if args.record:
+        print("Recorded reviewable integration patches")
         return
-    target = Path(sysconfig.get_paths()["purelib"]) / RELATIVE
-    if not target.resolve().is_relative_to(PROJECT / ".venv"):
-        raise ValueError(f"refusing to patch outside dedicated venv: {target}")
-    current = target.read_bytes()
-    if current not in (original, modified):
-        raise ValueError("installed worker differs from both known states")
-    desired = original if args.restore else modified
-    target.write_bytes(desired)
-    manifest = {
-        "target": str(target),
-        "original_sha256": digest(original),
-        "patched_sha256": digest(modified),
-        "current_sha256": digest(desired),
-        "recipe": "upstream/lmcache/examples/blend_kv_v1/README.md",
-    }
+    # Validate every target first. Break uv's hardlinks before changing files.
+    for target, desired in pending:
+        with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as stream:
+            stream.write(desired)
+            temporary = Path(stream.name)
+        temporary.chmod(target.stat().st_mode & 0o777)
+        os.replace(temporary, target)
+    manifest = {"files": files}
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime_patch.json").write_text(json.dumps(manifest, indent=2))
     print(json.dumps(manifest))

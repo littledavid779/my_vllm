@@ -22,7 +22,10 @@
         "lmcache/integration/vllm/vllm_v1_adapter.py": "96de295fd5269c3f30521527319e55e38c98da4d235ae72a3a68e525b865f577",
         "lmcache/integration/vllm/utils.py": "f3685b51632fc960c27f43b3206364b40d3522fc8928d0a0ca1206937971746d",
         "lmcache/v1/token_database.py": "73392eabe9b33dddb8ec2bb42488a4e87d5fbebd66b341f190bf23810c5acaed",
-        "lmcache/v1/cache_engine.py": "b620d520083a45c57cf236a3adb178fc6117cb2b1177dba6ffb43b0233032016"
+        "lmcache/v1/cache_engine.py": "b620d520083a45c57cf236a3adb178fc6117cb2b1177dba6ffb43b0233032016",
+        "lmcache/v1/gpu_connector.py": "0a87b24bf9253692e77a1841f621ccf79334547debcb6a1776aec22c6715161b",
+        "csrc/mem_kernels.cuh": "07c18c3198a161f613285303f576d3d2b98693f39286eb6b7021fcbe2866b7d6",
+        "csrc/pybind.cpp": "8ca1acf70199db58fa3649f9318923023eb177f72f1badcb9b5f215ff10275c3"
       }
     },
     "vllm": {

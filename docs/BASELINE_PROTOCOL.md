@@ -35,5 +35,7 @@ PatchKV 面向中间编辑，A³ 已研究问题相关性，它们都是设计�
 ## 修改与回退
 
 上游 Git checkout 保持在锁定 commit。官方初始化兼容修改保存为项目内 patch，脚本对原文件哈希和目标目录进行检查后，才应用到专用 venv。
+实际联调还需要在 LMCache 请求适配器中将 vLLM 0.11 的 `ConstantList` 转为普通 `list` 后送往序列化接口。此修改独立保存，不改变 token 值或重算算法。
+另两个 buffer connector 调用省略了 C++ 声明默认值为 `False` 的 `use_mla` 参数，但 pybind 接口没有暴露默认值；兼容补丁在全注意力路径显式补齐 `False`。CUDA 内核和选择器均保持上游原样。
 后续算法补丁和运行配置进入研究分支；不要只修改 `.venv/site-packages` 而不保存补丁。
 基线回退使用已验证 tag 的新 worktree 与独立环境，避免覆盖仍在工作的优化分支；本项目所有提交先留在本地，不自动推送。
