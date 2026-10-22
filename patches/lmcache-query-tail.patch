@@ -1,0 +1,56 @@
+--- a/lmcache/v1/compute/blend/blender.py
++++ b/lmcache/v1/compute/blend/blender.py
+@@ -1,5 +1,6 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # Standard
++import os
+ from typing import Optional, Union
+ 
+ # Third Party
+@@ -13,6 +14,24 @@
+ from lmcache.v1.config import LMCacheEngineConfig
+ 
+ logger = init_logger(__name__)
++
++
++def select_with_query_tail(diff_k, topk_num, tail_tokens):
++    """Return exactly topk_num unique positions, without changing scores."""
++    if tail_tokens not in (0, 64):
++        raise ValueError("only frozen 0/64-token query-tail policies are supported")
++    if not 1 <= topk_num <= diff_k.numel():
++        raise ValueError("invalid selection budget")
++    total_len = diff_k.numel()
++    forced = min(tail_tokens, topk_num) if total_len >= 1024 else 0
++    if not forced:
++        return torch.topk(diff_k, k=topk_num).indices, 0
++    tail = torch.arange(total_len - forced, total_len, device=diff_k.device)
++    other_count = topk_num - forced
++    if not other_count:
++        return tail, forced
++    outside = torch.topk(diff_k[:total_len - forced], k=other_count).indices
++    return torch.cat((outside, tail)), forced
+ 
+ 
+ class LMCBlender:
+@@ -97,8 +116,20 @@
+             topk_num = int(total_len * self.common_metadata.recomp_ratios[0])
+             topk_num = max(topk_num, 1)
+ 
+-            top_indices = torch.topk(diff_k, k=topk_num).indices
++            tail_tokens = int(
++                os.environ.get("LMCACHE_QUERY_TAIL_TOKENS", "0")
++            )
++            top_indices, forced = select_with_query_tail(
++                diff_k, topk_num, tail_tokens
++            )
+             top_indices, _ = torch.sort(top_indices)
++            # Identical instrumentation in both arms, included in client TTFT.
++            tail_scope = min(64, total_len)
++            covered = int((top_indices >= total_len - tail_scope).sum().item())
++            logger.info(
++                "QUERY_TAIL total=%d selected=%d forced=%d covered=%d",
++                total_len, top_indices.numel(), forced, covered,
++            )
+ 
+             k, v = k[top_indices], v[top_indices]
+             q = q[top_indices]

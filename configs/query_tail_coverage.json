@@ -1,0 +1,14 @@
+[
+  {
+    "input": "round2_sparse_probe",
+    "input_sha256": "33157492fdcf42e3d2c3b27023482b477e9beb8ffca4f706ce809bcb5035e544",
+    "checked_prompts": 96,
+    "tail_tokens": 64
+  },
+  {
+    "input": "strict_holdout_v1",
+    "input_sha256": "814dc687ca37d5433be7cbe31da41aa82182a22b38b128dc092ab5ebb54c84ca",
+    "checked_prompts": 384,
+    "tail_tokens": 64
+  }
+]
