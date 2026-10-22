@@ -9,7 +9,7 @@
 - `upstream/vllm/`：vLLM v0.11.0 原始源码；独立上游 Git checkout。
 - `requirements.in` / `requirements.lock`：直接依赖与完整依赖、下载哈希。
 - `.venv/` / `.uv-cache/`：专用环境与下载缓存。
-- `patches/`：初始化顺序及 token 容器序列化的兼容补丁，另存为可审阅文件。
+- `patches/`：初始化顺序、token 容器及传输参数的兼容补丁。
 - `configs/` / `scripts/`：实验配置及可重跑入口。
 - `results/`：原始运行日志与 manifest，不进入 Git。
 - `state/parent_before.json`：原工程状态校验，不进入 Git。
@@ -46,12 +46,13 @@ uv --cache-dir .uv-cache pip sync --python .venv/bin/python --require-hashes req
 .venv/bin/python scripts/run_http_pilot.py --output results/http_NEW
 ```
 
-`prepare_pilot.py` 对已有标准答案负载只插入官方分块分隔符，输入及来源哈希保存在 `data.lock.json`，原始 token 数据保存在忽略的 `data/`。warmup 使用不与测量输入重合的合成块，避免把被测编辑提前变成完整缓存命中。
+`prepare_pilot.py` 对已有标准答案负载插入官方分块分隔符，并记录每次新 B′ 的 token；标准答案不变。输入及来源哈希保存在 `data.lock.json`，原始 token 数据保存在忽略的 `data/`。warmup 使用不与测量输入重合的合成块，避免把被测编辑提前变成完整缓存命中。
 HTTP 验证逐个启动独立服务，对比完整重算、原生前缀与官方 CacheBlend 15%，客户端通过 SSE 的首个生成 token 计时；不是原论文数据集复现或新的优化结果。
+该固定版本的检索遇到首个未缓存块会停止。为了验证真实后缀融合，CacheBlend arm 先单独计算新 B′ 的块缓存，额外请求的完整耗时计入客户端 TTFT；同时启用官方 `save_unfull_chunk` 选项保留完整末段。原生 full/prefix 直接处理最终输入。仅报告主请求耗时会漏掉这项适配成本。
 
 复现初次建立时，`parent_guard.py record` 已保存原工程状态；后续使用 `parent_guard.py check`，不覆盖初始记录。
 在新 worktree 中，先用 `parent_guard.py record` 建立该 worktree 的独立状态记录。
-`apply_runtime_patch.py` 只允许修改此目录 `.venv` 中与固定上游源码一致的 worker 文件，遇到其他版本立即停止；`--restore` 可恢复这个文件的上游原始内容。
+`apply_runtime_patch.py` 只允许修改此目录 `.venv` 中三个与固定上游源码一致的目标文件，遇到其他版本立即停止；`--restore` 可恢复其上游原始内容。
 兼容修改来自 LMCache 固定版本的示例 README：模型加载后登记模型，再初始化 KV transfer。官方算法文件保持原样。
 另有一行版本兼容修改：在 LMCache 的 vLLM 请求适配器中，将 `request.all_token_ids` 转为普通 `list`，使 vLLM 0.11 的只读 `ConstantList` 能通过 msgspec 序列化。token 内容与顺序不变，重算打分与选点不变。
 补丁通过原子替换文件应用，避免修改 uv wheel cache 的硬链接；安装缓存保持上游原始内容。
@@ -60,7 +61,8 @@ HTTP 验证逐个启动独立服务，对比完整重算、原生前缀与官方
 ## Git 与回退
 
 当前先在 `baseline/cacheblend` 分支保存复现脚本、版本、配置和兼容补丁，跑通后打带阶段名的 tag。
-优化开始时，从已验证 baseline 新建 `research/edit-aware` 分支。算法修改保存在独立补丁并记录对应上游 commit，不在现有主工程内做试验。
+已验证的官方示例检查点为 `baseline/official-smoke-20261022`；状态和证据入口见 [本次复现记录](docs/STATUS_20261022.md)。
+HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预建 `research/edit-aware` 分支，尚未加入算法优化。算法修改保存在独立补丁并记录对应上游 commit，不在现有主工程内做试验。
 对照时可用 `git worktree add ../cacheblend-baseline <已验证的baseline-tag>` 创建单独目录；按该目录的锁文件和配置重新建立环境。新目录不共享可写的 Python 环境或 KV 缓存。
 不使用 `reset --hard`、`clean` 或覆盖原工作区来回退。当前只在本地提交，不自动发布到远端。
 

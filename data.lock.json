@@ -1,12 +1,12 @@
 {
   "source_path": "/home/ljc/vllm/results/suffix_public_http_corrected_gpu1_20261021/input.json",
   "source_sha256": "c0f83d2a3decd1305ab5ab2686a13088e2936d0d71245278106c0149d9c57a6b",
-  "adaptation": "Insert chunk separators at A/B and B/C; gold unchanged.",
+  "adaptation": "Insert A/B/C separators; record new B for counted precompute; gold unchanged.",
   "separator_ids": [
     671
   ],
   "scope": "Small middle-edit diagnostic; not the original paper benchmark.",
-  "input_sha256": "71fd3de30313cbc7b65057bbc2c56192d0ad5513de366886f1022ed23a43b312",
+  "input_sha256": "df2ccaf28276284b10d3d4d6fc528164083e0fd70af10269e9582678f51be6f2",
   "model": "/hole0/model_info/model_zoo/downloads/Qwen3-8B",
   "sessions": 8,
   "source_manifest": {

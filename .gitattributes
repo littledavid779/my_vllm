@@ -1,0 +1,2 @@
+# Unified patch context lines can consist of one space.
+patches/*.patch -whitespace

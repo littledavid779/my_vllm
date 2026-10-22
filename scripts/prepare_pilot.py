@@ -33,6 +33,7 @@ def main():
         begin, end = session["editable_token_span"]
         for version in session["versions"]:
             ids = version["token_ids"]
+            version["new_chunk_ids"] = ids[begin:end]
             for segment in (ids[:begin], ids[begin:end], ids[end:]):
                 if any(
                     segment[i : i + len(separator)] == separator
@@ -46,7 +47,10 @@ def main():
     data["pilot_provenance"] = {
         "source_path": str(args.source.resolve()),
         "source_sha256": hashlib.sha256(args.source.read_bytes()).hexdigest(),
-        "adaptation": "Insert chunk separators at A/B and B/C; gold unchanged.",
+        "adaptation": (
+            "Insert A/B/C separators; record new B for counted precompute; "
+            "gold unchanged."
+        ),
         "separator_ids": separator,
         "scope": "Small middle-edit diagnostic; not the original paper benchmark.",
     }

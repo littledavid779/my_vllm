@@ -65,6 +65,7 @@ async def request(client, model, ids, max_tokens=64):
         "generated_text": "".join(chunks),
         "request_id": rid,
         "usage": usage,
+        "first_token_monotonic": first,
     }
 
 
@@ -94,14 +95,43 @@ async def measure(args, data, root, arm, server, alias):
         for session in data["sessions"]:
             await request(client, alias, session["versions"][0]["token_ids"])
             for version, item in enumerate(session["versions"][1:], 1):
+                pipeline_started = time.perf_counter()
+                preparation = None
+                if arm == "cacheblend15":
+                    preparation = await request(
+                        client, alias, item["new_chunk_ids"], max_tokens=1
+                    )
                 row = await request(client, alias, item["token_ids"])
+                row["main_request_ttft_ms"] = row["client_ttft_ms"]
+                row["new_chunk_prepare_ms"] = (
+                    preparation["client_total_ms"] if preparation else 0.0
+                )
+                row["client_ttft_ms"] = (
+                    row["first_token_monotonic"] - pipeline_started
+                ) * 1000
+                row["client_total_ms"] = (time.perf_counter() - pipeline_started) * 1000
                 row.update(
                     arm=arm,
                     session_id=session["session_id"],
                     family=session["family"],
                     version=version,
+                    suffix_start=(
+                        session["editable_token_span"][1]
+                        + 2 * len(data["pilot_provenance"]["separator_ids"])
+                    ),
                     expected_value=item["expected_value"],
                     task_correct=score(row["generated_text"], item["expected_value"]),
+                    exact_prefix_tokens=next(
+                        i
+                        for i, (a, b) in enumerate(
+                            zip(
+                                session["versions"][version - 1]["token_ids"],
+                                item["token_ids"],
+                                strict=True,
+                            )
+                        )
+                        if a != b
+                    ),
                 )
                 rows.append(row)
                 with (root / "requests.jsonl").open("a") as stream:
@@ -155,6 +185,9 @@ def report(root, rows):
         "加了官方分块分隔符，不能与之前原型的耗时直接比较；不是论文原始负载复现。",
         "各 arm 独立启动服务并播种原始上下文，随后按版本连续编辑；"
         "CacheBlend 使用上游实际缓存管理行为，不另加私有缓存链策略。",
+        "CacheBlend 要求融合块已经存在，因此先单独生成新 B′ 块的缓存；"
+        "这次额外请求的完整耗时计入客户端 TTFT，并另存 main_request_ttft_ms。"
+        "启用上游 save_unfull_chunk 选项，保证末尾 C 的完整块可再次命中。",
         "HTTP token-ID 接口：从客户端发请求至首个生成 token，含 API、通信、"
         "排队、检索、搬运、选择和重算；不含初次播种、分词与后续解码。",
         "",
@@ -182,7 +215,7 @@ def report(root, rows):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--port", type=int, default=8265)
+    parser.add_argument("--port", type=int, default=18265)
     parser.add_argument("--gpu", type=int, default=1)
     args = parser.parse_args()
     if Path(sys.prefix).resolve() != PROJECT / ".venv":
@@ -280,6 +313,7 @@ def main():
                         "LMCACHE_CHUNK_SIZE": "256",
                         "LMCACHE_LOCAL_CPU": "True",
                         "LMCACHE_MAX_LOCAL_CPU_SIZE": "5",
+                        "LMCACHE_SAVE_UNFULL_CHUNK": "True",
                     }
                 )
                 command += [
@@ -320,8 +354,30 @@ def main():
                         if not gpu_state(args.gpu)["pids"]:
                             break
                         time.sleep(0.5)
+        text = (root / "cacheblend15.log").read_text()
+        hits = {
+            rid: int(count)
+            for rid, count in re.findall(
+                r"Reqid: (\S+), Total tokens \d+, LMCache hit tokens: (\d+)", text
+            )
+        }
+        verified = 0
+        for row in rows:
+            if row["arm"] == "cacheblend15":
+                count = hits.get(row["request_id"] + "-0", -1)
+                row["lmcache_hit_tokens"] = count
+                if count > row["suffix_start"]:
+                    verified += 1
+                else:
+                    raise RuntimeError("CacheBlend did not reach the unchanged C chunk")
+        (root / "results.json").write_text(json.dumps(rows, indent=2))
         report(root, rows)
-        manifest.update(status="completed", events=len(rows))
+        manifest.update(
+            status="completed",
+            events=len(rows),
+            verified_nonprefix_events=verified,
+            new_chunk_cost_included=True,
+        )
     except BaseException as exc:
         manifest.update(status="failed", error=repr(exc))
         raise
