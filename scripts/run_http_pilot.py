@@ -245,9 +245,15 @@ def main():
     parser.add_argument("--precheck-kv-write", action="store_true")
     parser.add_argument("--query-tail-tokens", type=int, choices=(0, 64))
     parser.add_argument(
-        "--query-control", choices=("topk", "query", "tail64", "pre_tail64", "random64")
+        "--query-control",
+        choices=("topk", "query", "tail64", "pre_tail64", "random64", "boundary"),
     )
+    parser.add_argument("--query-fair", action="store_true")
     args = parser.parse_args()
+    if args.query_fair and args.query_control not in ("query", "tail64", "boundary"):
+        parser.error("fair comparison requires a supported selector")
+    if args.query_control == "boundary" and not args.query_fair:
+        parser.error("boundary requires fair comparison patch")
     if args.query_control is not None and (
         args.query_tail_tokens is not None
         or not (args.strict_causal and args.precheck_kv_write)
@@ -300,7 +306,9 @@ def main():
         if script == "verify_runtime.py" and args.query_tail_tokens is not None:
             verification.append("--allow-query-tail")
         if script == "verify_runtime.py" and args.query_control is not None:
-            verification.append("--allow-query-controls")
+            verification.append(
+                "--allow-query-fair" if args.query_fair else "--allow-query-controls"
+            )
         subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
@@ -321,6 +329,7 @@ def main():
             "precheck_kv_write": args.precheck_kv_write,
             "query_tail_tokens": args.query_tail_tokens,
             "query_control": args.query_control,
+            "query_fair": args.query_fair,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
             "max_num_seqs": args.max_num_seqs,

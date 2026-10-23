@@ -1,0 +1,173 @@
+--- a/lmcache/v1/compute/blend/blender.py
++++ b/lmcache/v1/compute/blend/blender.py
+@@ -1,5 +1,8 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # Standard
++import hashlib
++import json
++import os
+ from typing import Optional, Union
+ 
+ # Third Party
+@@ -13,6 +16,108 @@
+ from lmcache.v1.config import LMCacheEngineConfig
+ 
+ logger = init_logger(__name__)
++
++
++def query_control_span(tail):
++    starts = [i for i in range(len(tail) - 1)
++              if tail[i:i + 2] == [14582, 25]]
++    if not starts:
++        return 0
++    start = starts[-1]
++    if not any(tail[i:i + 2] == [151644, 77091]
++               for i in range(start + 2, len(tail) - 1)):
++        raise ValueError("query marker without assistant template")
++    return len(tail) - start
++
++
++def select_query_control(diff_k, topk_num, mode, query_length, seed=20261023):
++    """Reserve positions within one budget, then take the best remaining K diffs."""
++    total_len = diff_k.numel()
++    if mode not in ("topk", "query", "tail64", "pre_tail64", "random64"):
++        raise ValueError("unknown query control")
++    if not 1 <= topk_num <= total_len or not 0 <= query_length <= 64:
++        raise ValueError("invalid budget or query span")
++    if total_len < 1024 or mode == "topk":
++        return torch.topk(diff_k, topk_num).indices, 0
++    if mode == "query":
++        if query_length > topk_num:
++            raise ValueError("cannot fit entire query in the fixed budget")
++        mandatory = torch.arange(total_len - query_length, total_len,
++                                 device=diff_k.device)
++    elif mode == "tail64":
++        count = min(64, topk_num)
++        mandatory = torch.arange(total_len - count, total_len,
++                                 device=diff_k.device)
++    elif mode == "pre_tail64":
++        count = min(64, topk_num)
++        mandatory = torch.arange(total_len - 64 - count, total_len - 64,
++                                 device=diff_k.device)
++    else:
++        # CPU generator gives the same reserved set across devices and repeats.
++        generator = torch.Generator(device="cpu").manual_seed(seed + total_len)
++        mandatory = torch.randperm(total_len - 64, generator=generator)[
++            :min(64, topk_num)].to(diff_k.device)
++    count = mandatory.numel()
++    if count == 0:
++        return torch.topk(diff_k, topk_num).indices, 0
++    remaining = topk_num - count
++    if remaining == 0:
++        return mandatory, count
++    # Mask a clone, leaving scores and mandatory indices untouched.
++    candidates = diff_k.clone()
++    candidates[mandatory] = -torch.inf
++    extra = torch.topk(candidates, remaining).indices
++    return torch.cat((extra, mandatory)), count
++
++
++def fair_boundaries(tokens):
++    separator = [671, 84648, 87354, 62, 22, 64, 24, 66, 671, 671]
++    return [i for i in range(len(tokens) - len(separator) + 1)
++            if tokens[i:i + len(separator)] == separator]
++
++
++def boundary_positions(total, budget, query_length, starts):
++    """Equal-depth prefixes of nonfirst chunks, plus the entire query.
++
++    Include the delimiter at each boundary. Water filling transfers unused
++    allocation from the short edited chunk to the longer suffix. No gold labels
++    or supporting-fact locations are consulted.
++    """
++    if not 0 <= query_length <= budget <= total or budget < 1:
++        raise ValueError("invalid boundary budget")
++    query_start = total - query_length
++    if starts != sorted(set(starts)) or any(s < 0 or s >= query_start for s in starts):
++        raise ValueError("invalid chunk boundaries")
++    selected = list(range(query_start, total))
++    if not starts:
++        raise ValueError("boundary selection needs nonfirst chunks")
++    ends = starts[1:] + [query_start]
++    offset = 0
++    while len(selected) < budget:
++        added = 0
++        for start, end in zip(starts, ends):
++            if start + offset < end and len(selected) < budget:
++                selected.append(start + offset)
++                added += 1
++        if not added:
++            # Late edits may leave fewer than 10% tokens after the first chunk.
++            # Fill from the exact prefix to keep the comparison's total budget.
++            # Since budget <= total, these positions fit before starts[0].
++            selected.extend(range(budget - len(selected)))
++            break
++        offset += 1
++    return sorted(selected)
++
++
++def select_query_fair(diff_k, topk_num, mode, query_length, starts):
++    if mode not in ("query", "tail64", "boundary"):
++        raise ValueError("unknown fair control")
++    if diff_k.numel() < 1024:
++        return torch.topk(diff_k, topk_num).indices, 0
++    if mode != "boundary":
++        return select_query_control(diff_k, topk_num, mode, query_length)
++    positions = boundary_positions(diff_k.numel(), topk_num, query_length, starts)
++    return torch.tensor(positions, device=diff_k.device, dtype=torch.long), topk_num
+ 
+ 
+ class LMCBlender:
+@@ -97,9 +202,29 @@
+             topk_num = int(total_len * self.common_metadata.recomp_ratios[0])
+             topk_num = max(topk_num, 1)
+ 
+-            top_indices = torch.topk(diff_k, k=topk_num).indices
++            mode = os.environ.get("LMCACHE_QUERY_CONTROL", "topk")
++            query_length = self.query_control_length
++            top_indices, forced = select_query_fair(
++                diff_k, topk_num, mode, query_length, self.query_fair_starts
++            )
+             top_indices, _ = torch.sort(top_indices)
+-
++            # Identical synchronization in all arms; included in HTTP TTFT.
++            coverage = torch.stack((
++                (top_indices >= total_len - query_length).sum(),
++                (top_indices >= total_len - min(64, total_len)).sum(),
++            )).tolist()
++            logger.info(
++                "QUERY_CONTROL mode=%s total=%d selected=%d forced=%d "
++                "query=%d qcovered=%d tailcovered=%d signature=%s",
++                mode, total_len, top_indices.numel(), forced, query_length,
++                coverage[0], coverage[1], self.query_control_signature,
++            )
++
++            selected_sha = hashlib.sha256(
++                json.dumps(top_indices.tolist()).encode()
++            ).hexdigest()
++            logger.info("QUERY_FAIR mode=%s promptsha=%s selectedsha=%s",
++                        mode, self.query_fair_prompt_sha, selected_sha)
+             k, v = k[top_indices], v[top_indices]
+             q = q[top_indices]
+             residual = residual[top_indices]
+@@ -137,6 +262,20 @@
+ 
+         # TODO(Jiayi): store is currently not included in this function
+ 
++        # All arms pay identical prompt-boundary parsing and audit costs.
++        # Identical parsing cost in every fair-comparison arm.
++        token_list = (tokens.tolist() if isinstance(tokens, torch.Tensor)
++                      else list(tokens))
++        tail = token_list[-64:]
++        self.query_fair_starts = fair_boundaries(token_list)
++        self.query_fair_prompt_sha = hashlib.sha256(
++            json.dumps(token_list).encode()
++        ).hexdigest()
++        self.query_control_length = (query_control_span(tail)
++                                     if len(tokens) >= 1024 else 0)
++        self.query_control_signature = hashlib.sha256(
++            json.dumps(tail).encode()
++        ).hexdigest()[:16]
+         layerwise_model_executor = self.layerwise_model.compute_layer(tokens)
+         layerwise_retriever = self.cache_engine.retrieve_layer(tokens, mask, **kwargs)
+ 
