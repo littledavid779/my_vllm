@@ -12,6 +12,7 @@ from pathlib import Path
 
 from apply_precheck_kv_patch import RELATIVE as PRECHECK_RELATIVE
 from apply_precheck_kv_patch import commit_precheck
+from apply_query_control_patch import query_controls
 from apply_query_tail_patch import reserve_query_tail
 from apply_runtime_patch import (
     LM_GPU_RELATIVE,
@@ -42,7 +43,15 @@ def main():
     parser.add_argument("--allow-strict-causal", action="store_true")
     parser.add_argument("--allow-precheck-kv-write", action="store_true")
     parser.add_argument("--allow-query-tail", action="store_true")
+    parser.add_argument("--allow-query-controls", action="store_true")
     args = parser.parse_args()
+    if args.allow_query_controls and (
+        args.allow_query_tail
+        or not (args.allow_strict_causal and args.allow_precheck_kv_write)
+    ):
+        parser.error(
+            "query controls require strict/common correction and no query-tail patch"
+        )
     if args.allow_query_tail and not args.allow_precheck_kv_write:
         parser.error("query-tail requires the common pre-check KV correction")
     if args.allow_strict_causal and args.allow_sparse_index_fix:
@@ -71,6 +80,10 @@ def main():
             transforms[str(PRECHECK_RELATIVE)] = commit_precheck
         if args.allow_query_tail:
             transforms[str(PRECHECK_RELATIVE)] = lambda source: reserve_query_tail(
+                commit_precheck(source)
+            )
+        if args.allow_query_controls:
+            transforms[str(PRECHECK_RELATIVE)] = lambda source: query_controls(
                 commit_precheck(source)
             )
         if relative in transforms:
@@ -111,6 +124,7 @@ def main():
         "strict_causal": args.allow_strict_causal,
         "precheck_kv_write": args.allow_precheck_kv_write,
         "query_tail_patch": args.allow_query_tail,
+        "query_controls_patch": args.allow_query_controls,
     }
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime.json").write_text(json.dumps(data, indent=2))

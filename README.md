@@ -83,3 +83,5 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 参考：[CacheBlend 论文](https://arxiv.org/abs/2405.16444v3)、[固定版本 LMCache](https://github.com/LMCache/LMCache/tree/v0.3.13)、[官方兼容说明](https://github.com/LMCache/LMCache/blob/v0.3.13/examples/blend_kv_v1/README.md)。
 
 固定 10% 预算的问题末段 64-token 修复已完成，协议与结果见 [本轮结果](docs/QUERY_TAIL_RESULTS_20261022.md)。配置和对照保存在 `experiment/query-tail` 分支，运行结束后恢复发布版算法。
+
+问题刷新机制对照：见 [预先固定的协议](docs/QUERY_CONTROLS_PROTOCOL_20261023.md)。

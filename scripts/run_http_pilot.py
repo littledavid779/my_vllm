@@ -244,7 +244,17 @@ def main():
     parser.add_argument("--strict-causal", action="store_true")
     parser.add_argument("--precheck-kv-write", action="store_true")
     parser.add_argument("--query-tail-tokens", type=int, choices=(0, 64))
+    parser.add_argument(
+        "--query-control", choices=("topk", "query", "tail64", "pre_tail64", "random64")
+    )
     args = parser.parse_args()
+    if args.query_control is not None and (
+        args.query_tail_tokens is not None
+        or not (args.strict_causal and args.precheck_kv_write)
+    ):
+        parser.error(
+            "query controls require strict/common correction and no query-tail patch"
+        )
     if args.query_tail_tokens is not None and not (
         args.strict_causal and args.precheck_kv_write
     ):
@@ -289,6 +299,8 @@ def main():
             verification.append("--allow-precheck-kv-write")
         if script == "verify_runtime.py" and args.query_tail_tokens is not None:
             verification.append("--allow-query-tail")
+        if script == "verify_runtime.py" and args.query_control is not None:
+            verification.append("--allow-query-controls")
         subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
@@ -308,6 +320,7 @@ def main():
             "strict_causal": args.strict_causal,
             "precheck_kv_write": args.precheck_kv_write,
             "query_tail_tokens": args.query_tail_tokens,
+            "query_control": args.query_control,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
             "max_num_seqs": args.max_num_seqs,
@@ -396,6 +409,8 @@ def main():
             mode_env = env.copy()
             if args.query_tail_tokens is not None:
                 mode_env["LMCACHE_QUERY_TAIL_TOKENS"] = str(args.query_tail_tokens)
+            if args.query_control is not None:
+                mode_env["LMCACHE_QUERY_CONTROL"] = args.query_control
             alias = f"cacheblend-pilot-{arm}-{uuid.uuid4().hex}"
             command = [
                 sys.executable,
