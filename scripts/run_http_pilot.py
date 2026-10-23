@@ -249,7 +249,20 @@ def main():
         choices=("topk", "query", "tail64", "pre_tail64", "random64", "boundary"),
     )
     parser.add_argument("--query-fair", action="store_true")
+    parser.add_argument(
+        "--query-template", choices=("topk", "none", "question", "template", "both")
+    )
     args = parser.parse_args()
+    if args.query_template is not None and (
+        args.query_control is not None
+        or args.query_fair
+        or args.query_tail_tokens is not None
+        or not (args.strict_causal and args.precheck_kv_write)
+    ):
+        parser.error(
+            "question/template controls require strict/common corrections "
+            "and no other selector patch"
+        )
     if args.query_fair and args.query_control not in ("query", "tail64", "boundary"):
         parser.error("fair comparison requires a supported selector")
     if args.query_control == "boundary" and not args.query_fair:
@@ -309,6 +322,8 @@ def main():
             verification.append(
                 "--allow-query-fair" if args.query_fair else "--allow-query-controls"
             )
+        if script == "verify_runtime.py" and args.query_template is not None:
+            verification.append("--allow-query-template")
         subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
@@ -330,6 +345,7 @@ def main():
             "query_tail_tokens": args.query_tail_tokens,
             "query_control": args.query_control,
             "query_fair": args.query_fair,
+            "query_template": args.query_template,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
             "max_num_seqs": args.max_num_seqs,
@@ -420,6 +436,8 @@ def main():
                 mode_env["LMCACHE_QUERY_TAIL_TOKENS"] = str(args.query_tail_tokens)
             if args.query_control is not None:
                 mode_env["LMCACHE_QUERY_CONTROL"] = args.query_control
+            if args.query_template is not None:
+                mode_env["LMCACHE_QUERY_TEMPLATE"] = args.query_template
             alias = f"cacheblend-pilot-{arm}-{uuid.uuid4().hex}"
             command = [
                 sys.executable,

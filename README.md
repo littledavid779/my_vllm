@@ -87,3 +87,5 @@ HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预�
 问题刷新机制对照：见 [预先固定的协议](docs/QUERY_CONTROLS_PROTOCOL_20261023.md)。
 
 共同问题刷新与新来源验证：见 [预先固定的协议](docs/QUERY_FAIR_PROTOCOL_20261023.md)。
+
+问题与模板严格拆分：见 [实验协议](docs/QUERY_TEMPLATE_PROTOCOL_20261023.md)。

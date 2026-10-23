@@ -15,6 +15,7 @@ from apply_precheck_kv_patch import commit_precheck
 from apply_query_control_patch import query_controls
 from apply_query_fair_patch import fair_controls
 from apply_query_tail_patch import reserve_query_tail
+from apply_query_template_patch import template_controls
 from apply_runtime_patch import (
     LM_GPU_RELATIVE,
     LM_RELATIVE,
@@ -46,7 +47,18 @@ def main():
     parser.add_argument("--allow-query-tail", action="store_true")
     parser.add_argument("--allow-query-controls", action="store_true")
     parser.add_argument("--allow-query-fair", action="store_true")
+    parser.add_argument("--allow-query-template", action="store_true")
     args = parser.parse_args()
+    if args.allow_query_template and (
+        args.allow_query_tail
+        or args.allow_query_controls
+        or args.allow_query_fair
+        or not (args.allow_strict_causal and args.allow_precheck_kv_write)
+    ):
+        parser.error(
+            "question/template patch requires strict/common corrections "
+            "and no other selector patch"
+        )
     if args.allow_query_fair:
         if args.allow_query_controls:
             parser.error("choose one query patch")
@@ -92,6 +104,10 @@ def main():
             transforms[str(PRECHECK_RELATIVE)] = lambda source: (
                 fair_controls if args.allow_query_fair else query_controls
             )(commit_precheck(source))
+        if args.allow_query_template:
+            transforms[str(PRECHECK_RELATIVE)] = lambda source: template_controls(
+                commit_precheck(source)
+            )
         if relative in transforms:
             source = PROJECT / "upstream/lmcache" / relative
             expected = hashlib.sha256(
@@ -132,6 +148,7 @@ def main():
         "query_tail_patch": args.allow_query_tail,
         "query_controls_patch": args.allow_query_controls,
         "query_fair_patch": args.allow_query_fair,
+        "query_template_patch": args.allow_query_template,
     }
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime.json").write_text(json.dumps(data, indent=2))
