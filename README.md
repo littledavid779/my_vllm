@@ -1,6 +1,39 @@
-# CacheBlend 独立复现
+# 编辑后后缀 KV 复用：CacheBlend 复现与问题刷新实验
 
 目标是在已有方法的基础上，在相近端到端 TTFT 下提高任务质量。这个目录是独立 Git 仓库；现有 `/home/ljc/vllm` 的分支、暂存区、研究改动和 `.venv` 均保留。
+
+## 当前代码与 GitHub 分支（2026-10-24）
+
+GitHub 分支为 [`research/kv-suffix-query-boundary-20261024`](https://github.com/littledavid779/my_vllm/tree/research/kv-suffix-query-boundary-20261024)。分支根目录是这个独立实验工程，保留从首次复现到当前实验的 15 个代码与证据提交；它与同一仓库里的完整 vLLM 工程使用独立历史。此次发布在实验提交之上只更新本 README，不修改实验实现。
+
+| 组成 | 当前使用的版本 |
+| --- | --- |
+| 正在测量的实验代码 | `73cf1ebf04b77db05c6ce546e06f585c48f13315`；本地分支 `experiment/query-boundary` |
+| vLLM | `v0.11.0`，`b8b302cde434df8c9289a2b465406b47ebab1c2d` |
+| LMCache / CacheBlend 实现 | `v0.3.13`，`fc031d471a566edb6d49a86c9116cc23cfb04111` |
+| 模型 | Qwen3-8B，单卡运行；权重不进入 Git |
+| 版本与依赖锁定 | `sources.lock.json`、`requirements.lock` |
+
+当前研究是在固定版本 LMCache 的 K 差异选择器之上，通过独立补丁比较问题计算方式；不能将所有实验组统称为未经修改的官方 CacheBlend。共同后端使用严格原位置因果注意力与检查层前 KV 写回修正；三种近似组分别采用全局 top-k、预算内强制重算问题及模板、问题及模板不入缓存而由 vLLM 正常前向。另设完整重算和精确前缀缓存。各近似组名义预算为 10%，实际计算口径和端到端 TTFT 见协议。
+
+- 当前实验协议：[问题缓存边界与输入表达](docs/QUERY_BOUNDARY_PROTOCOL_20261024.md)。
+- 运行和分析入口：`scripts/run_query_boundary.py`、`scripts/analyze_query_boundary.py`。
+- 新增机制补丁：`scripts/apply_query_boundary_patch.py`、`patches/lmcache-query-boundary.patch`；只应用到独立 `.venv`，不改写上游源码 checkout。
+- 上一轮已完成结果及核验：[问题与模板结果留存](docs/QUERY_TEMPLATE_RESULTS_AND_NEXT_20261024.md)。其中的“下一轮尚未启动”描述的是留存时的状态；当前实验已在 GPU1 启动，发布时仍在测量，尚无正式结论。
+- 本次发布前，当前实验的 80 项 CPU 测试通过；三个 100% 预算 GPU smoke 均通过任务正确性和实际计算位置审计。smoke 不作为 10% 预算的质量或性能结果。
+
+代码、补丁、配置、测试、实验协议和已提交的结果摘要进入 GitHub。模型、上游源码 checkout、环境、原始输入和运行日志由 `.gitignore` 排除；原始证据仍在本机数据盘。代码发布不等于原始实验数据的异地备份。
+
+后续开发请在单独目录检出此分支，运行中的工程保持冻结：
+
+```bash
+git clone --single-branch --branch research/kv-suffix-query-boundary-20261024 \
+  https://github.com/littledavid779/my_vllm.git kv-suffix-research
+cd kv-suffix-research
+git switch -c experiment/next-study
+```
+
+新目录需按下文重建专用环境。当前脚本还依赖本机模型路径、被忽略的输入文件及原工程保护记录；仅克隆代码不能立即重跑全部实验。请先准备输入并核对协议、输入锁文件和本机路径，勿让新实验共享正在使用的可写环境或 KV 缓存。
 
 ## 版本与目录
 
@@ -16,7 +49,7 @@
 
 上游源码、模型权重、环境和原始结果均不作为普通文件提交到本项目；上游由 commit 与文件哈希锁定。模型只读取 `/hole0/model_info/model_zoo/downloads/Qwen3-8B`，不复制权重。
 
-## 本阶段范围
+## 初始官方复现阶段范围
 
 先运行固定版本官方 `examples/blend_kv_v1/blend.py` 的重排文本块流程，验证非前缀复用与检查层选点实际发生。
 通过包装器只调整模型路径、上下文上限、单卡显存额度以及结果保存；不替换官方 selector，不接入我们已有的 tail/hybrid 策略。
@@ -60,11 +93,11 @@ HTTP 验证逐个启动独立服务，对比完整重算、原生前缀与官方
 
 ## Git 与回退
 
-当前先在 `baseline/cacheblend` 分支保存复现脚本、版本、配置和兼容补丁，跑通后打带阶段名的 tag。
+最初在 `baseline/cacheblend` 分支保存复现脚本、版本、配置和兼容补丁，跑通后打带阶段名的 tag。以下 baseline 分支和标签是本地历史检查点；本次只发布上方的研究分支，不自动发布所有本地引用。
 已验证的官方示例检查点为 `baseline/official-smoke-20261022`；状态和证据入口见 [本次复现记录](docs/STATUS_20261022.md)。
 HTTP 管线检查点为 `baseline/http-pilot-20261022`；已从该检查点预建 `research/edit-aware` 分支，尚未加入算法优化。算法修改保存在独立补丁并记录对应上游 commit，不在现有主工程内做试验。
 对照时可用 `git worktree add ../cacheblend-baseline <已验证的baseline-tag>` 创建单独目录；按该目录的锁文件和配置重新建立环境。新目录不共享可写的 Python 环境或 KV 缓存。
-不使用 `reset --hard`、`clean` 或覆盖原工作区来回退。当前只在本地提交，不自动发布到远端。
+不使用 `reset --hard`、`clean` 或覆盖原工作区来回退。本次按用户要求将独立实验历史发布到专用研究分支；原有远端分支、原 vLLM 工作区和运行中实验的分支与提交均保持原样。
 
 独立实验目录可以整体迁往数据盘，并在 `/home/ljc/vllm/reproductions/cacheblend` 保留软链接，使虚拟环境的旧 shebang 和现有入口继续有效。迁移需保留环境与缓存之间的硬链接（如使用 `rsync -aH`），完成内容校验和运行验证后再移除原副本。`parent_guard.py check` 使用初始状态文件内记录的原工程路径，不根据迁移后的物理目录推断；不要重建或覆盖该初始记录。旧结果中保存的绝对路径作为历史证据保留。
 
