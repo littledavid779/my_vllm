@@ -124,6 +124,7 @@ async def measure(args, data, root, arm, server, alias):
                     family=session["family"],
                     source_id=session.get("source_id", session["session_id"]),
                     placement=session.get("placement", "pilot"),
+                    variant=session.get("variant", "original"),
                     prompt_tokens=session["prompt_tokens"],
                     suffix_tokens=session.get("suffix_tokens"),
                     version=version,
@@ -252,7 +253,15 @@ def main():
     parser.add_argument(
         "--query-template", choices=("topk", "none", "question", "template", "both")
     )
+    parser.add_argument("--query-boundary", choices=("topk", "query", "fresh"))
     args = parser.parse_args()
+    if args.query_boundary is not None and (
+        args.query_template is not None
+        or args.query_control is not None
+        or args.query_tail_tokens is not None
+        or not (args.strict_causal and args.precheck_kv_write)
+    ):
+        parser.error("boundary control requires strict/common corrections only")
     if args.query_template is not None and (
         args.query_control is not None
         or args.query_fair
@@ -324,6 +333,8 @@ def main():
             )
         if script == "verify_runtime.py" and args.query_template is not None:
             verification.append("--allow-query-template")
+        if script == "verify_runtime.py" and args.query_boundary is not None:
+            verification.append("--allow-query-boundary")
         subprocess.run(verification, check=True)
     manifest = {
         "status": "planned",
@@ -346,6 +357,7 @@ def main():
             "query_control": args.query_control,
             "query_fair": args.query_fair,
             "query_template": args.query_template,
+            "query_boundary": args.query_boundary,
             "arms": args.arms,
             "max_model_len": args.max_model_len,
             "max_num_seqs": args.max_num_seqs,
@@ -438,6 +450,8 @@ def main():
                 mode_env["LMCACHE_QUERY_CONTROL"] = args.query_control
             if args.query_template is not None:
                 mode_env["LMCACHE_QUERY_TEMPLATE"] = args.query_template
+            if args.query_boundary is not None:
+                mode_env["LMCACHE_QUERY_BOUNDARY"] = args.query_boundary
             alias = f"cacheblend-pilot-{arm}-{uuid.uuid4().hex}"
             command = [
                 sys.executable,

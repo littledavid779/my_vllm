@@ -12,6 +12,8 @@ from pathlib import Path
 
 from apply_precheck_kv_patch import RELATIVE as PRECHECK_RELATIVE
 from apply_precheck_kv_patch import commit_precheck
+from apply_query_boundary_patch import MODULE as BOUNDARY_MODULE
+from apply_query_boundary_patch import plans as boundary_plans
 from apply_query_control_patch import query_controls
 from apply_query_fair_patch import fair_controls
 from apply_query_tail_patch import reserve_query_tail
@@ -48,7 +50,18 @@ def main():
     parser.add_argument("--allow-query-controls", action="store_true")
     parser.add_argument("--allow-query-fair", action="store_true")
     parser.add_argument("--allow-query-template", action="store_true")
+    parser.add_argument("--allow-query-boundary", action="store_true")
     args = parser.parse_args()
+    if args.allow_query_boundary and (
+        args.allow_query_template
+        or args.allow_query_controls
+        or args.allow_query_fair
+        or args.allow_query_tail
+        or not (args.allow_strict_causal and args.allow_precheck_kv_write)
+    ):
+        parser.error(
+            "boundary patch requires strict/common correction and no other selector"
+        )
     if args.allow_query_template and (
         args.allow_query_tail
         or args.allow_query_controls
@@ -108,6 +121,8 @@ def main():
             transforms[str(PRECHECK_RELATIVE)] = lambda source: template_controls(
                 commit_precheck(source)
             )
+        if args.allow_query_boundary and relative in boundary_plans():
+            transforms[relative] = lambda source, rel=relative: boundary_plans()[rel][1]
         if relative in transforms:
             source = PROJECT / "upstream/lmcache" / relative
             expected = hashlib.sha256(
@@ -116,6 +131,13 @@ def main():
         if actual != expected:
             raise ValueError(f"installed baseline algorithm differs: {relative}")
         files[relative] = actual
+    helper = site / BOUNDARY_MODULE
+    if args.allow_query_boundary:
+        if helper.read_text() != boundary_plans()[BOUNDARY_MODULE][1]:
+            raise ValueError("boundary helper differs")
+        files[BOUNDARY_MODULE] = hashlib.sha256(helper.read_bytes()).hexdigest()
+    elif helper.exists():
+        raise ValueError("unexpected boundary helper installed")
     packages = {}
     for name in ("vllm", "lmcache", "torch", "transformers", "flashinfer-python"):
         packages[name] = importlib.metadata.version(name)
@@ -149,6 +171,7 @@ def main():
         "query_controls_patch": args.allow_query_controls,
         "query_fair_patch": args.allow_query_fair,
         "query_template_patch": args.allow_query_template,
+        "query_boundary_patch": args.allow_query_boundary,
     }
     (PROJECT / "state").mkdir(exist_ok=True)
     (PROJECT / "state/runtime.json").write_text(json.dumps(data, indent=2))
