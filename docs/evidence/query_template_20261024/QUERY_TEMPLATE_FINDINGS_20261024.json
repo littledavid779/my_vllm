@@ -1,0 +1,1303 @@
+{
+  "strict_holdout_v1": {
+    "families": [
+      {
+        "family": "babilong_qa2",
+        "events": 96,
+        "correct": {
+          "full": 48,
+          "topk": 43,
+          "none": 43,
+          "question": 43,
+          "template": 43,
+          "both": 43
+        },
+        "net_gain_both_vs_topk": 0
+      },
+      {
+        "family": "babilong_qa3",
+        "events": 96,
+        "correct": {
+          "full": 8,
+          "topk": 6,
+          "none": 6,
+          "question": 8,
+          "template": 7,
+          "both": 8
+        },
+        "net_gain_both_vs_topk": 2
+      },
+      {
+        "family": "babilong_qa9",
+        "events": 96,
+        "correct": {
+          "full": 84,
+          "topk": 38,
+          "none": 38,
+          "question": 83,
+          "template": 38,
+          "both": 86
+        },
+        "net_gain_both_vs_topk": 48
+      }
+    ],
+    "full_correct_both_wrong": 7,
+    "full_wrong_both_correct": 4,
+    "disagreements": [
+      {
+        "session_id": "qa2_006_early8k",
+        "version": 3,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "garden",
+        "full_answer": "garden",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "office",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "office",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "office",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "office",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "office",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "office",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "office",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "office",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "office",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "office",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_011_early8k",
+        "version": 2,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "garden",
+        "full_answer": "garden",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_014_early8k",
+        "version": 2,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "garden",
+        "full_answer": "garden",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_026_early8k",
+        "version": 2,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "bedroom",
+        "full_answer": "garden",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_033_early8k",
+        "version": 1,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "bathroom",
+        "full_answer": "bathroom",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_035_early8k",
+        "version": 1,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "bathroom",
+        "full_answer": "bathroom",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_035_early8k",
+        "version": 3,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "garden",
+        "full_answer": "garden",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa3_029_early8k",
+        "version": 1,
+        "family": "babilong_qa3",
+        "placement": "early8k",
+        "gold": "bathroom",
+        "full_answer": "bathroom",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa3_037_early8k",
+        "version": 3,
+        "family": "babilong_qa3",
+        "placement": "early8k",
+        "gold": "hallway",
+        "full_answer": "bathroom",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "hallway",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "hallway",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa9_014_early8k",
+        "version": 1,
+        "family": "babilong_qa9",
+        "placement": "early8k",
+        "gold": "yes",
+        "full_answer": "no",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "yes",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "yes",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "yes",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "yes",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa9_014_early8k",
+        "version": 3,
+        "family": "babilong_qa9",
+        "placement": "early8k",
+        "gold": "yes",
+        "full_answer": "no",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "yes",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "yes",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "no",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "no",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "yes",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "yes",
+              "correct": true
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "query_fair_v1": {
+    "families": [
+      {
+        "family": "babilong_qa2",
+        "events": 96,
+        "correct": {
+          "full": 46,
+          "topk": 46,
+          "none": 46,
+          "question": 46,
+          "template": 47,
+          "both": 47
+        },
+        "net_gain_both_vs_topk": 1
+      },
+      {
+        "family": "babilong_qa3",
+        "events": 96,
+        "correct": {
+          "full": 15,
+          "topk": 15,
+          "none": 16,
+          "question": 15,
+          "template": 16,
+          "both": 14
+        },
+        "net_gain_both_vs_topk": -1
+      },
+      {
+        "family": "babilong_qa9",
+        "events": 96,
+        "correct": {
+          "full": 92,
+          "topk": 47,
+          "none": 34,
+          "question": 92,
+          "template": 38,
+          "both": 92
+        },
+        "net_gain_both_vs_topk": 45
+      }
+    ],
+    "full_correct_both_wrong": 3,
+    "full_wrong_both_correct": 3,
+    "disagreements": [
+      {
+        "session_id": "qa2_071_early8k",
+        "version": 2,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "bedroom",
+        "full_answer": "bathroom",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_072_natural4k",
+        "version": 2,
+        "family": "babilong_qa2",
+        "placement": "natural4k",
+        "gold": "bedroom",
+        "full_answer": "kitchen",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa2_077_early8k",
+        "version": 1,
+        "family": "babilong_qa2",
+        "placement": "early8k",
+        "gold": "bathroom",
+        "full_answer": "bathroom",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "kitchen",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "kitchen",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa3_066_natural4k",
+        "version": 2,
+        "family": "babilong_qa3",
+        "placement": "natural4k",
+        "gold": "bedroom",
+        "full_answer": "bedroom",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": false
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa3_068_early8k",
+        "version": 1,
+        "family": "babilong_qa3",
+        "placement": "early8k",
+        "gold": "bathroom",
+        "full_answer": "bedroom",
+        "full_correct": false,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bathroom",
+              "correct": true
+            },
+            {
+              "repeat": 1,
+              "answer": "bathroom",
+              "correct": true
+            }
+          ]
+        }
+      },
+      {
+        "session_id": "qa3_068_natural4k",
+        "version": 2,
+        "family": "babilong_qa3",
+        "placement": "natural4k",
+        "gold": "hallway",
+        "full_answer": "hallway",
+        "full_correct": true,
+        "methods": {
+          "topk": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "none": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "question": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "template": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ],
+          "both": [
+            {
+              "repeat": 0,
+              "answer": "bedroom",
+              "correct": false
+            },
+            {
+              "repeat": 1,
+              "answer": "bedroom",
+              "correct": false
+            }
+          ]
+        }
+      }
+    ]
+  }
+}
